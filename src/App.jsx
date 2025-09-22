@@ -259,7 +259,7 @@ export default function App() {
         {/* Footer */}
         <footer className="bg-primary-dark text-white mt-auto">
           <div className="mx-auto max-w-5xl px-4 py-3 text-center text-sm opacity-90">
-            © {new Date().getFullYear()} Mesas de Votación — Minimal & realtime
+            © {new Date().getFullYear()} Mesas de Votación — Votaciones en tiempo real.
           </div>
         </footer>
       </div>
@@ -332,12 +332,13 @@ export default function App() {
               </button>
             </div>
             <p className="mt-2 text-xs text-black/50">
-              Escribe las opciones de respuesta separadas por comas.  
-              Ejemplo: <i>Sí,No,Abstención</i>.  
+              Escribe las opciones de respuesta separadas por comas.
+              Ejemplo: <i>Sí,No,Abstención</i>.
               Si lo dejas vacío, se usarán las opciones clásicas <b>Sí / No</b>.
             </p>
           </section>
 
+          {/* Unirse a sala */}
           {/* Unirse a sala */}
           <section className="rounded-2xl border border-black/5 bg-white p-6 shadow-sm">
             <h3 className="text-lg font-semibold text-primary mb-4">Unirse a sala</h3>
@@ -350,12 +351,20 @@ export default function App() {
               />
               <button
                 onClick={joinRoom}
-                className="rounded-lg bg-secondary px-4 py-2 text-white font-medium hover:opacity-90"
+                disabled={!userName.trim()} // 🚨 Bloqueamos si no hay nombre
+                className={`rounded-lg px-4 py-2 font-medium text-white ${userName.trim()
+                    ? "bg-secondary hover:opacity-90"
+                    : "bg-gray-400 cursor-not-allowed"
+                  }`}
               >
                 Entrar
               </button>
             </div>
+            <p className="mt-2 text-xs text-black/50">
+              Solo podrás entrar si antes guardaste tu nombre.
+            </p>
           </section>
+
         </div>
       </main>
 
