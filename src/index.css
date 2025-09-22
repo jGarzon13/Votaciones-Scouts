@@ -1,0 +1,16 @@
+@import "tailwindcss";
+
+/* Paleta tipo Scouts */
+@theme {
+  --color-primary: #5B2D90;
+  --color-primary-light: #7E3CC0;
+  --color-primary-dark: #3E1D66;
+  --color-secondary: #E94F37;
+  --color-background: #F9FAFB;
+}
+
+body {
+  font-family: 'Inter', system-ui, Avenir, Helvetica, Arial, sans-serif;
+  background: var(--color-background);
+  color: #111;
+}
