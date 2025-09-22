@@ -13,10 +13,11 @@ import {
 export default function App() {
   const [mode, setMode] = useState("home"); // "home" | "room"
   const [question, setQuestion] = useState("");
-  const [optionsInput, setOptionsInput] = useState(""); // campo para opciones dinámicas
+  const [optionsInput, setOptionsInput] = useState("");
   const [joinCode, setJoinCode] = useState("");
   const [code, setCode] = useState(null);
   const [questions, setQuestions] = useState([]);
+  const [participants, setParticipants] = useState([]);
   const [adminUid, setAdminUid] = useState(null);
   const [adminName, setAdminName] = useState(null);
   const [userName, setUserName] = useState(localStorage.getItem("userName") || "");
@@ -28,7 +29,6 @@ export default function App() {
     alert("Nombre guardado ✅");
   };
 
-  // transformar el input en array de opciones
   const parseOptions = (raw) => {
     const arr = (raw || "")
       .split(",")
@@ -62,6 +62,15 @@ export default function App() {
       voters: [],
     });
 
+    // Guardar al creador como participante
+    if (user) {
+      await setDoc(doc(db, "rooms", newCode, "participants", user.uid), {
+        uid: user.uid,
+        name: userName,
+        joinedAt: Date.now(),
+      });
+    }
+
     setCode(newCode);
     setMode("room");
     setQuestion("");
@@ -70,9 +79,21 @@ export default function App() {
 
   const joinRoom = async () => {
     if (!joinCode.trim()) return alert("Escribe un código");
+    if (!userName.trim()) return alert("Primero guarda tu nombre");
+
     const ref = doc(db, "rooms", joinCode.toUpperCase());
     const snap = await getDoc(ref);
     if (!snap.exists()) return alert("Sala no encontrada");
+
+    const user = auth.currentUser;
+    if (user) {
+      await setDoc(doc(db, "rooms", joinCode.toUpperCase(), "participants", user.uid), {
+        uid: user.uid,
+        name: userName,
+        joinedAt: Date.now(),
+      });
+    }
+
     setCode(joinCode.toUpperCase());
     setMode("room");
   };
@@ -93,9 +114,19 @@ export default function App() {
       setQuestions(qs);
     });
 
+    const unsubParticipants = onSnapshot(
+      collection(db, "rooms", code, "participants"),
+      (snap) => {
+        const ps = [];
+        snap.forEach((d) => ps.push(d.data()));
+        setParticipants(ps);
+      }
+    );
+
     return () => {
       unsubRoom();
       unsubQs();
+      unsubParticipants();
     };
   }, [code]);
 
@@ -125,9 +156,10 @@ export default function App() {
     const name = localStorage.getItem("userName") || "Anónimo";
     if (voters.some((v) => v.uid === user.uid)) return alert("Ya votaste en esta pregunta");
 
+    // Guardamos solo que votó, no su elección
     await updateDoc(doc(db, "rooms", code, "questions", qId), {
       [`votes.${opcion}`]: currentVotes[opcion] + 1,
-      voters: [...voters, { uid: user.uid, name, choice: opcion }],
+      voters: [...voters, { uid: user.uid, name }],
     });
   };
 
@@ -159,6 +191,21 @@ export default function App() {
 
         {/* Main */}
         <main className="flex-1 mx-auto max-w-5xl px-4 py-8 space-y-6">
+          {/* Lista de participantes */}
+          <section className="rounded-xl border border-black/5 bg-white p-4 shadow-sm">
+            <h2 className="text-sm font-medium text-primary mb-2">Participantes en la sala</h2>
+            <ul className="grid gap-1 sm:grid-cols-2 md:grid-cols-3">
+              {participants.map((p, i) => (
+                <li key={i} className="rounded-lg bg-gray-50 px-3 py-2 text-sm text-black/80">
+                  <span className="font-medium">{p.name}</span>
+                  {p.uid === adminUid && (
+                    <span className="ml-2 text-xs text-primary">(Moderador)</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </section>
+
           {/* Crear pregunta (admin) */}
           {auth.currentUser?.uid === adminUid && (
             <section className="rounded-xl border border-black/5 bg-white p-4 shadow-sm">
@@ -236,7 +283,7 @@ export default function App() {
 
                   {q.voters && q.voters.length > 0 && (
                     <div className="mt-4">
-                      <div className="text-sm font-medium text-black/70 mb-1">Votantes</div>
+                      <div className="text-sm font-medium text-black/70 mb-1">Votaron</div>
                       <ul className="grid gap-1 sm:grid-cols-2 md:grid-cols-3">
                         {q.voters.map((v, i) => (
                           <li
@@ -244,7 +291,7 @@ export default function App() {
                             className="rounded-lg bg-gray-50 px-3 py-2 text-sm text-black/80"
                           >
                             <span className="font-medium">{v.name}</span>{" "}
-                            <span className="text-black/50">→ {v.choice}</span>
+                            <span className="text-black/50">→ Votó</span>
                           </li>
                         ))}
                       </ul>
@@ -303,7 +350,7 @@ export default function App() {
             </button>
           </div>
           <p className="mt-2 text-xs text-black/50">
-            Tu nombre se usará para mostrar quién vota y, si creas una sala, como moderador.
+            Tu nombre se usará para mostrar quién está en la sala y en las votaciones.
           </p>
         </section>
 
@@ -326,19 +373,18 @@ export default function App() {
               />
               <button
                 onClick={createRoom}
-                className="rounded-lg bg-primary px-4 py-2 text-white font-medium hover:bg-primary-light"
+                disabled={!userName.trim()}
+                className={`rounded-lg px-4 py-2 font-medium text-white ${
+                  userName.trim()
+                    ? "bg-primary hover:bg-primary-light"
+                    : "bg-gray-400 cursor-not-allowed"
+                }`}
               >
                 Crear
               </button>
             </div>
-            <p className="mt-2 text-xs text-black/50">
-              Escribe las opciones de respuesta separadas por comas.
-              Ejemplo: <i>Sí,No,Abstención</i>.
-              Si lo dejas vacío, se usarán las opciones clásicas <b>Sí / No</b>.
-            </p>
           </section>
 
-          {/* Unirse a sala */}
           {/* Unirse a sala */}
           <section className="rounded-2xl border border-black/5 bg-white p-6 shadow-sm">
             <h3 className="text-lg font-semibold text-primary mb-4">Unirse a sala</h3>
@@ -351,30 +397,26 @@ export default function App() {
               />
               <button
                 onClick={joinRoom}
-                disabled={!userName.trim()} // 🚨 Bloqueamos si no hay nombre
-                className={`rounded-lg px-4 py-2 font-medium text-white ${userName.trim()
+                disabled={!userName.trim()}
+                className={`rounded-lg px-4 py-2 font-medium text-white ${
+                  userName.trim()
                     ? "bg-secondary hover:opacity-90"
                     : "bg-gray-400 cursor-not-allowed"
-                  }`}
+                }`}
               >
                 Entrar
               </button>
             </div>
-            <p className="mt-2 text-xs text-black/50">
-              Solo podrás entrar si antes guardaste tu nombre.
-            </p>
           </section>
-
         </div>
       </main>
 
       {/* Footer */}
       <footer className="bg-primary-dark text-white mt-auto">
         <div className="mx-auto max-w-5xl px-4 py-3 text-center text-sm opacity-90">
-          © {new Date().getFullYear()} Mesas de Votación — Votaciones en tiempo real.
+          © {new Date().getFullYear()} Mesas de Votación — Votaciones en tiempo real - GRZN 2025.
         </div>
       </footer>
     </div>
   );
 }
-
