@@ -9,6 +9,7 @@ import {
   onSnapshot,
   updateDoc,
 } from "firebase/firestore";
+import { Toaster, toast } from "react-hot-toast"; // ✅ Notificaciones modernas
 
 export default function App() {
   const [mode, setMode] = useState("home"); // "home" | "room"
@@ -21,14 +22,14 @@ export default function App() {
   const [adminUid, setAdminUid] = useState(null);
   const [adminName, setAdminName] = useState(null);
   const [userName, setUserName] = useState(localStorage.getItem("userName") || "");
-  const [isNameSaved, setIsNameSaved] = useState(!!localStorage.getItem("userName")); // ✅
+  const [isNameSaved, setIsNameSaved] = useState(!!localStorage.getItem("userName"));
 
   /* ----------------------- helpers ----------------------- */
   const handleSetName = () => {
-    if (!userName.trim()) return alert("Escribe tu nombre");
+    if (!userName.trim()) return toast.error("⚠️ Escribe tu nombre");
     localStorage.setItem("userName", userName);
     setIsNameSaved(true);
-    alert("Nombre guardado ✅");
+    toast.success("✅ Nombre guardado");
   };
 
   const parseOptions = (raw) => {
@@ -41,8 +42,8 @@ export default function App() {
 
   /* ----------------------- lógica ----------------------- */
   const createRoom = async () => {
-    if (!question.trim()) return alert("Escribe una pregunta");
-    if (!isNameSaved) return alert("Primero guarda tu nombre");
+    if (!question.trim()) return toast.error("❓ Escribe una pregunta");
+    if (!isNameSaved) return toast.error("💾 Primero guarda tu nombre");
 
     const newCode = Math.random().toString(36).substring(2, 7).toUpperCase();
     const user = auth.currentUser;
@@ -76,15 +77,16 @@ export default function App() {
     setMode("room");
     setQuestion("");
     setOptionsInput("");
+    toast.success("🎉 Sala creada con éxito");
   };
 
   const joinRoom = async () => {
-    if (!joinCode.trim()) return alert("Escribe un código");
-    if (!isNameSaved) return alert("Primero guarda tu nombre");
+    if (!joinCode.trim()) return toast.error("🔑 Escribe un código");
+    if (!isNameSaved) return toast.error("💾 Primero guarda tu nombre");
 
     const ref = doc(db, "rooms", joinCode.toUpperCase());
     const snap = await getDoc(ref);
-    if (!snap.exists()) return alert("Sala no encontrada");
+    if (!snap.exists()) return toast.error("❌ Sala no encontrada");
 
     const user = auth.currentUser;
     if (user) {
@@ -97,6 +99,7 @@ export default function App() {
 
     setCode(joinCode.toUpperCase());
     setMode("room");
+    toast.success("🙌 Te uniste a la sala");
   };
 
   useEffect(() => {
@@ -132,7 +135,7 @@ export default function App() {
   }, [code]);
 
   const addQuestion = async () => {
-    if (!question.trim()) return alert("Escribe una pregunta");
+    if (!question.trim()) return toast.error("❓ Escribe una pregunta");
 
     const options = parseOptions(optionsInput);
     const votesObj = Object.fromEntries(options.map((o) => [o, 0]));
@@ -147,24 +150,28 @@ export default function App() {
 
     setQuestion("");
     setOptionsInput("");
+    toast.success("➕ Pregunta agregada");
   };
 
   const votar = async (qId, opcion, currentVotes, closed, voters = []) => {
-    if (closed) return alert("Pregunta cerrada");
+    if (closed) return toast.error("🔒 Pregunta cerrada");
     const user = auth.currentUser;
-    if (!user) return alert("No estás autenticado");
+    if (!user) return toast.error("🚫 No estás autenticado");
 
     const name = localStorage.getItem("userName") || "Anónimo";
-    if (voters.some((v) => v.uid === user.uid)) return alert("Ya votaste en esta pregunta");
+    if (voters.some((v) => v.uid === user.uid)) return toast.error("🙅 Ya votaste en esta pregunta");
 
     await updateDoc(doc(db, "rooms", code, "questions", qId), {
       [`votes.${opcion}`]: currentVotes[opcion] + 1,
       voters: [...voters, { uid: user.uid, name }],
     });
+
+    toast.success(`🗳️ Voto registrado: ${opcion}`);
   };
 
   const cerrarPregunta = async (qId) => {
     await updateDoc(doc(db, "rooms", code, "questions", qId), { closed: true });
+    toast.success("🔒 Pregunta cerrada");
   };
 
   /* ----------------------- views ----------------------- */
@@ -292,6 +299,9 @@ export default function App() {
             © {new Date().getFullYear()} Mesas de Votación — Votaciones en tiempo real.
           </div>
         </footer>
+
+        {/* Toaster */}
+        <Toaster position="top-center" toastOptions={{ duration: 3000 }} />
       </div>
     );
   }
@@ -400,6 +410,9 @@ export default function App() {
           © {new Date().getFullYear()} Mesas de Votación — Votaciones en tiempo real - GRZN 2025.
         </div>
       </footer>
+
+      {/* Toaster */}
+      <Toaster position="top-center" toastOptions={{ duration: 3000 }} />
     </div>
   );
 }
