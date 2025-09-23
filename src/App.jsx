@@ -21,11 +21,13 @@ export default function App() {
   const [adminUid, setAdminUid] = useState(null);
   const [adminName, setAdminName] = useState(null);
   const [userName, setUserName] = useState(localStorage.getItem("userName") || "");
+  const [isNameSaved, setIsNameSaved] = useState(!!localStorage.getItem("userName")); // ✅
 
   /* ----------------------- helpers ----------------------- */
   const handleSetName = () => {
     if (!userName.trim()) return alert("Escribe tu nombre");
     localStorage.setItem("userName", userName);
+    setIsNameSaved(true);
     alert("Nombre guardado ✅");
   };
 
@@ -40,7 +42,7 @@ export default function App() {
   /* ----------------------- lógica ----------------------- */
   const createRoom = async () => {
     if (!question.trim()) return alert("Escribe una pregunta");
-    if (!userName.trim()) return alert("Primero guarda tu nombre");
+    if (!isNameSaved) return alert("Primero guarda tu nombre");
 
     const newCode = Math.random().toString(36).substring(2, 7).toUpperCase();
     const user = auth.currentUser;
@@ -62,7 +64,6 @@ export default function App() {
       voters: [],
     });
 
-    // Guardar al creador como participante
     if (user) {
       await setDoc(doc(db, "rooms", newCode, "participants", user.uid), {
         uid: user.uid,
@@ -79,7 +80,7 @@ export default function App() {
 
   const joinRoom = async () => {
     if (!joinCode.trim()) return alert("Escribe un código");
-    if (!userName.trim()) return alert("Primero guarda tu nombre");
+    if (!isNameSaved) return alert("Primero guarda tu nombre");
 
     const ref = doc(db, "rooms", joinCode.toUpperCase());
     const snap = await getDoc(ref);
@@ -156,7 +157,6 @@ export default function App() {
     const name = localStorage.getItem("userName") || "Anónimo";
     if (voters.some((v) => v.uid === user.uid)) return alert("Ya votaste en esta pregunta");
 
-    // Guardamos solo que votó, no su elección
     await updateDoc(doc(db, "rooms", code, "questions", qId), {
       [`votes.${opcion}`]: currentVotes[opcion] + 1,
       voters: [...voters, { uid: user.uid, name }],
@@ -173,15 +173,15 @@ export default function App() {
       <div className="min-h-screen flex flex-col bg-background">
         {/* Header */}
         <header className="bg-primary text-white">
-          <div className="mx-auto max-w-5xl px-4 py-4 flex items-center justify-between">
-            <h1 className="text-xl font-bold">
+          <div className="mx-auto max-w-5xl px-4 py-3 flex items-center justify-between">
+            <h1 className="text-lg sm:text-xl font-bold">
               🗳️ Sala #{code}
               {auth.currentUser?.uid === adminUid
                 ? ` — Hola, ${userName} (Moderador)`
                 : ` — Hola, ${userName}`}
             </h1>
             <button
-              className="text-sm underline decoration-white/60 hover:decoration-white"
+              className="text-xs sm:text-sm underline decoration-white/60 hover:decoration-white"
               onClick={() => setMode("home")}
             >
               Salir
@@ -190,16 +190,16 @@ export default function App() {
         </header>
 
         {/* Main */}
-        <main className="flex-1 mx-auto max-w-5xl px-4 py-8 space-y-6">
-          {/* Lista de participantes */}
+        <main className="flex-1 mx-auto max-w-5xl px-3 sm:px-4 py-6 sm:py-8 space-y-6">
+          {/* Participantes */}
           <section className="rounded-xl border border-black/5 bg-white p-4 shadow-sm">
-            <h2 className="text-sm font-medium text-primary mb-2">Participantes en la sala</h2>
+            <h2 className="text-sm font-medium text-primary mb-2">Participantes</h2>
             <ul className="grid gap-1 sm:grid-cols-2 md:grid-cols-3">
               {participants.map((p, i) => (
                 <li key={i} className="rounded-lg bg-gray-50 px-3 py-2 text-sm text-black/80">
                   <span className="font-medium">{p.name}</span>
                   {p.uid === adminUid && (
-                    <span className="ml-2 text-xs text-primary">(Moderador)</span>
+                    <span className="ml-1 text-xs text-primary">(Moderador)</span>
                   )}
                 </li>
               ))}
@@ -208,24 +208,24 @@ export default function App() {
 
           {/* Crear pregunta (admin) */}
           {auth.currentUser?.uid === adminUid && (
-            <section className="rounded-xl border border-black/5 bg-white p-4 shadow-sm">
+            <section className="rounded-xl border border-black/5 bg-white p-4 sm:p-6 shadow-sm">
               <h2 className="text-sm font-medium text-primary mb-2">Nueva pregunta</h2>
               <div className="flex flex-col gap-3 max-w-2xl">
                 <input
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
                   placeholder="Escribe la pregunta"
-                  className="rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
+                  className="w-full rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
                 />
                 <input
                   value={optionsInput}
                   onChange={(e) => setOptionsInput(e.target.value)}
                   placeholder="Opciones separadas por comas (ej: A favor,En contra,Abstención)"
-                  className="rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
+                  className="w-full rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
                 />
                 <button
                   onClick={addQuestion}
-                  className="rounded-lg bg-primary px-4 py-2 text-white font-medium hover:bg-primary-light"
+                  className="w-full sm:w-auto rounded-lg bg-primary px-4 py-2 text-white font-medium hover:bg-primary-light"
                 >
                   Agregar
                 </button>
@@ -242,12 +242,12 @@ export default function App() {
             {questions.map((q) => {
               const total = Object.values(q.votes).reduce((a, b) => a + b, 0);
               return (
-                <div key={q.id} className="rounded-2xl border border-black/5 bg-white p-5 shadow-sm">
-                  <div className="flex items-start justify-between gap-4">
-                    <h3 className="text-lg font-semibold">
+                <div key={q.id} className="rounded-2xl border border-black/5 bg-white p-4 sm:p-5 shadow-sm">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 sm:gap-4">
+                    <h3 className="text-base sm:text-lg font-semibold">
                       {q.question}{" "}
                       {q.closed && (
-                        <span className="ml-2 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
+                        <span className="ml-1 sm:ml-2 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
                           Cerrada
                         </span>
                       )}
@@ -255,14 +255,14 @@ export default function App() {
                     {auth.currentUser?.uid === adminUid && !q.closed && (
                       <button
                         onClick={() => cerrarPregunta(q.id)}
-                        className="text-sm text-secondary hover:underline"
+                        className="text-xs sm:text-sm text-secondary hover:underline"
                       >
                         🔒 Cerrar
                       </button>
                     )}
                   </div>
 
-                  <p className="mt-2 text-sm text-black/70">
+                  <p className="mt-2 text-xs sm:text-sm text-black/70">
                     Total votos: <b>{total}</b>
                   </p>
 
@@ -273,30 +273,13 @@ export default function App() {
                         onClick={() =>
                           votar(q.id, op, q.votes, q.closed, q.voters || [])
                         }
-                        className="rounded-lg bg-primary px-4 py-2 text-white font-medium hover:bg-primary-light disabled:opacity-50"
+                        className="w-full rounded-lg bg-primary px-3 py-2 text-white text-sm sm:text-base font-medium hover:bg-primary-light disabled:opacity-50"
                         disabled={q.closed}
                       >
                         {op} ({q.votes[op]})
                       </button>
                     ))}
                   </div>
-
-                  {q.voters && q.voters.length > 0 && (
-                    <div className="mt-4">
-                      <div className="text-sm font-medium text-black/70 mb-1">Votaron</div>
-                      <ul className="grid gap-1 sm:grid-cols-2 md:grid-cols-3">
-                        {q.voters.map((v, i) => (
-                          <li
-                            key={i}
-                            className="rounded-lg bg-gray-50 px-3 py-2 text-sm text-black/80"
-                          >
-                            <span className="font-medium">{v.name}</span>{" "}
-                            <span className="text-black/50">→ Votó</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
                 </div>
               );
             })}
@@ -305,7 +288,7 @@ export default function App() {
 
         {/* Footer */}
         <footer className="bg-primary-dark text-white mt-auto">
-          <div className="mx-auto max-w-5xl px-4 py-3 text-center text-sm opacity-90">
+          <div className="mx-auto max-w-5xl px-2 sm:px-4 py-2 sm:py-3 text-center text-xs sm:text-sm opacity-90">
             © {new Date().getFullYear()} Mesas de Votación — Votaciones en tiempo real.
           </div>
         </footer>
@@ -318,33 +301,33 @@ export default function App() {
     <div className="min-h-screen flex flex-col bg-background">
       {/* Header */}
       <header className="bg-primary text-white">
-        <div className="mx-auto max-w-5xl px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <span className="text-xl">🗳️</span>
-            <h1 className="text-xl font-bold">Mesas de Votación</h1>
+        <div className="mx-auto max-w-5xl px-3 sm:px-4 py-3 sm:py-4 flex items-center justify-between">
+          <div className="flex items-center gap-2 sm:gap-3">
+            <span className="text-lg sm:text-xl">🗳️</span>
+            <h1 className="text-lg sm:text-xl font-bold">Mesas de Votación</h1>
           </div>
         </div>
       </header>
 
       {/* Main */}
-      <main className="flex-1 mx-auto max-w-5xl px-4 py-10 space-y-8">
-        <h2 className="text-3xl md:text-4xl font-extrabold text-primary text-center">
+      <main className="flex-1 mx-auto max-w-5xl px-3 sm:px-4 py-6 sm:py-10 space-y-6 sm:space-y-8">
+        <h2 className="text-2xl sm:text-3xl md:text-4xl font-extrabold text-primary text-center">
           Crea una sala o únete con un código
         </h2>
 
         {/* Nombre del usuario */}
-        <section className="rounded-2xl border border-black/5 bg-white p-6 shadow-sm max-w-lg mx-auto">
-          <h3 className="text-lg font-semibold text-primary mb-4">Tu nombre</h3>
-          <div className="flex gap-3">
+        <section className="rounded-2xl border border-black/5 bg-white p-4 sm:p-6 shadow-sm max-w-lg mx-auto">
+          <h3 className="text-base sm:text-lg font-semibold text-primary mb-3 sm:mb-4">Tu nombre</h3>
+          <div className="flex flex-col sm:flex-row gap-3">
             <input
               value={userName}
               onChange={(e) => setUserName(e.target.value)}
               placeholder="Escribe tu nombre"
-              className="flex-1 rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
+              className="flex-1 w-full rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
             />
             <button
               onClick={handleSetName}
-              className="rounded-lg bg-primary px-4 py-2 text-white font-medium hover:bg-primary-light"
+              className="w-full sm:w-auto rounded-lg bg-primary px-4 py-2 text-white font-medium hover:bg-primary-light"
             >
               Guardar
             </button>
@@ -354,28 +337,28 @@ export default function App() {
           </p>
         </section>
 
-        <div className="grid gap-6 md:grid-cols-2">
+        <div className="grid gap-6 sm:grid-cols-1 md:grid-cols-2">
           {/* Crear sala */}
-          <section className="rounded-2xl border border-black/5 bg-white p-6 shadow-sm">
-            <h3 className="text-lg font-semibold text-primary mb-4">Crear sala</h3>
+          <section className="rounded-2xl border border-black/5 bg-white p-4 sm:p-6 shadow-sm">
+            <h3 className="text-base sm:text-lg font-semibold text-primary mb-3 sm:mb-4">Crear sala</h3>
             <div className="flex flex-col gap-3">
               <input
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
                 placeholder="Pregunta inicial"
-                className="rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
+                className="w-full rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
               />
               <input
                 value={optionsInput}
                 onChange={(e) => setOptionsInput(e.target.value)}
                 placeholder="Opciones separadas por comas (ej: Sí,No,Abstención)"
-                className="rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
+                className="w-full rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
               />
               <button
                 onClick={createRoom}
-                disabled={!userName.trim()}
-                className={`rounded-lg px-4 py-2 font-medium text-white ${
-                  userName.trim()
+                disabled={!isNameSaved}
+                className={`w-full sm:w-auto rounded-lg px-4 py-2 font-medium text-white ${
+                  isNameSaved
                     ? "bg-primary hover:bg-primary-light"
                     : "bg-gray-400 cursor-not-allowed"
                 }`}
@@ -386,20 +369,20 @@ export default function App() {
           </section>
 
           {/* Unirse a sala */}
-          <section className="rounded-2xl border border-black/5 bg-white p-6 shadow-sm">
-            <h3 className="text-lg font-semibold text-primary mb-4">Unirse a sala</h3>
-            <div className="flex gap-3">
+          <section className="rounded-2xl border border-black/5 bg-white p-4 sm:p-6 shadow-sm">
+            <h3 className="text-base sm:text-lg font-semibold text-primary mb-3 sm:mb-4">Unirse a sala</h3>
+            <div className="flex flex-col sm:flex-row gap-3">
               <input
                 value={joinCode}
                 onChange={(e) => setJoinCode(e.target.value)}
                 placeholder="CÓDIGO (ej: ABC12)"
-                className="flex-1 rounded-lg border border-black/10 px-3 py-2 uppercase tracking-wider outline-none focus:ring-2 focus:ring-primary/30"
+                className="flex-1 w-full rounded-lg border border-black/10 px-3 py-2 uppercase tracking-wider outline-none focus:ring-2 focus:ring-primary/30"
               />
               <button
                 onClick={joinRoom}
-                disabled={!userName.trim()}
-                className={`rounded-lg px-4 py-2 font-medium text-white ${
-                  userName.trim()
+                disabled={!isNameSaved}
+                className={`w-full sm:w-auto rounded-lg px-4 py-2 font-medium text-white ${
+                  isNameSaved
                     ? "bg-secondary hover:opacity-90"
                     : "bg-gray-400 cursor-not-allowed"
                 }`}
@@ -413,7 +396,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="bg-primary-dark text-white mt-auto">
-        <div className="mx-auto max-w-5xl px-4 py-3 text-center text-sm opacity-90">
+        <div className="mx-auto max-w-5xl px-2 sm:px-4 py-2 sm:py-3 text-center text-xs sm:text-sm opacity-90">
           © {new Date().getFullYear()} Mesas de Votación — Votaciones en tiempo real - GRZN 2025.
         </div>
       </footer>
