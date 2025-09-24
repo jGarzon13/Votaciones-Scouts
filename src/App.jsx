@@ -39,7 +39,7 @@ export default function App() {
   // parámetros moderador
   const [maxParticipants, setMaxParticipants] = useState("");
   const [quorum, setQuorum] = useState("");
-  const [maxChoices, setMaxChoices] = useState(""); // ✅ número máximo de opciones seleccionables
+  const [maxChoices, setMaxChoices] = useState(""); // vacío por defecto
 
   // para respuesta múltiple
   const [selectedOptions, setSelectedOptions] = useState({});
@@ -60,33 +60,42 @@ export default function App() {
     return arr.length ? arr : ["Sí", "No"];
   };
 
-  const generarPDF = (pregunta) => {
+  const generarPDF = () => {
     const pdf = new jsPDF();
     const fecha = new Date().toLocaleString();
 
     pdf.text(`Resultados de votación`, 14, 14);
     pdf.text(`Sala: ${code}`, 14, 22);
     pdf.text(`Fecha: ${fecha}`, 14, 30);
-    pdf.text(`Pregunta: ${pregunta.question}`, 14, 40);
+    pdf.text(`Quorum requerido: ${roomData?.quorum}`, 14, 38);
+    pdf.text(`Quorum actual: ${participants.length}`, 14, 46);
 
-    autoTable(pdf, {
-      startY: 48,
-      head: [["Opción", "Votos"]],
-      body: pregunta.options.map((o) => [o, String(pregunta.votes[o] || 0)]),
-      styles: { fontSize: 11 },
-    });
+    let startY = 54;
+    questions
+      .filter((q) => !q.isQuorumCheck) // excluir preguntas de quorum
+      .forEach((pregunta, idx) => {
+        pdf.text(`${idx + 1}. ${pregunta.question}`, 14, startY);
 
-    const voters = pregunta.voters || [];
-    if (voters.length) {
-      autoTable(pdf, {
-        startY: pdf.lastAutoTable.finalY + 8,
-        head: [["Votantes"]],
-        body: voters.map((v) => [v.name || "Anónimo"]),
-        styles: { fontSize: 10 },
+        autoTable(pdf, {
+          startY: startY + 4,
+          head: [["Opción", "Votos"]],
+          body: pregunta.options.map((o) => [o, String(pregunta.votes[o] || 0)]),
+          styles: { fontSize: 11 },
+        });
+
+        // quorum alcanzado sí/no
+        const quorumNecesario = roomData?.quorum || 1;
+        const quorumAlcanzado = participants.length >= quorumNecesario ? "Sí" : "No";
+        pdf.text(
+          `Quorum alcanzado: ${quorumAlcanzado} (${participants.length}/${quorumNecesario})`,
+          14,
+          pdf.lastAutoTable.finalY + 8
+        );
+
+        startY = pdf.lastAutoTable.finalY + 16;
       });
-    }
 
-    pdf.save(`votacion_${pregunta.id}.pdf`);
+    pdf.save(`informe_sala_${code}.pdf`);
   };
 
   const expulsarParticipante = (uid, name) => {
@@ -128,11 +137,10 @@ export default function App() {
   const createRoom = async () => {
     if (!isNameSaved) return toast.error("💾 Guarda tu nombre primero");
     if (!question.trim()) return toast.error("❓ Escribe la primera pregunta");
-    const maxC = Number(maxChoices) || 1; // por defecto 1 si está vacío
-    if (maxC < 1) return toast.error("⚠️ Máx. opciones inválido");
+
     const max = Number(maxParticipants);
     const quo = Number(quorum);
-    const choices = Number(maxChoices);
+    const choices = Number(maxChoices) || 1; // si está vacío, usar 1
 
     if (!Number.isFinite(max) || max < 1) return toast.error("👥 Máximo de participantes inválido");
     if (!Number.isFinite(quo) || quo < 1) return toast.error("🧮 Quorum inválido");
@@ -159,7 +167,7 @@ export default function App() {
       votes: votesObj,
       closed: false,
       voters: [],
-      maxChoices: maxC,
+      maxChoices: choices,
       isQuorumCheck: false,
     });
 
@@ -177,7 +185,7 @@ export default function App() {
     setOptionsInput("");
     setMaxParticipants("");
     setQuorum("");
-    setMaxChoices("1");
+    setMaxChoices("");
     toast.success("🎉 Sala creada con éxito");
   };
 
@@ -235,7 +243,21 @@ export default function App() {
       const qs = [];
       snap.forEach((d) => qs.push({ id: d.id, ...d.data() }));
       setQuestions(qs);
+
+      qs.forEach(async (q) => {
+        if (q.isQuorumCheck && !q.closed) {
+          const votosSi = q.votes?.["Sí"] || 0;
+          const quorumNecesario = roomData?.quorum || 1; // valor exacto definido por el moderador
+
+          if (votosSi >= quorumNecesario) {
+            await updateDoc(doc(db, "rooms", code, "questions", q.id), { closed: true });
+            toast.success("✅ Quorum confirmado automáticamente");
+          }
+        }
+      });
+
     });
+
 
     const unsubParticipants = onSnapshot(
       collection(db, "rooms", code, "participants"),
@@ -263,7 +285,7 @@ export default function App() {
   const addQuestion = async (isQuorumCheck = false) => {
     if (!isQuorumCheck && !question.trim()) return toast.error("❓ Escribe una pregunta");
 
-    const options = isQuorumCheck ? ["Sí", "No"] : parseOptions(optionsInput);
+    const options = isQuorumCheck ? ["Sí",] : parseOptions(optionsInput);
     const votesObj = Object.fromEntries(options.map((o) => [o, 0]));
 
     await addDoc(collection(db, "rooms", code, "questions"), {
@@ -310,10 +332,8 @@ export default function App() {
   };
 
   const cerrarPregunta = async (qId) => {
-    const q = questions.find((qq) => qq.id === qId);
     await updateDoc(doc(db, "rooms", code, "questions", qId), { closed: true });
     toast.success("🔒 Pregunta cerrada");
-    if (q) generarPDF(q);
   };
 
   /* ----------------------- VISTAS ----------------------- */
@@ -330,8 +350,16 @@ export default function App() {
                 ? ` — Hola, ${userName} (Moderador)`
                 : ` — Hola, ${userName}`}
             </h1>
+            {auth.currentUser?.uid === adminUid && (
+              <button
+                onClick={generarPDF}
+                className="ml-4 text-xs sm:text-sm underline decoration-white/60 hover:decoration-white"
+              >
+                📄 Descargar informe
+              </button>
+            )}
             <button
-              className="text-xs sm:text-sm underline decoration-white/60 hover:decoration-white"
+              className="ml-4 text-xs sm:text-sm underline decoration-white/60 hover:decoration-white"
               onClick={() => setMode("home")}
             >
               Salir
@@ -400,7 +428,7 @@ export default function App() {
                   min={1}
                   value={maxChoices}
                   onChange={(e) => setMaxChoices(e.target.value)}
-                  placeholder="Máximo de opciones que puede elegir cada votante"
+                  placeholder="Máximo de opciones seleccionables"
                   className="rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
                 />
                 <div className="flex flex-col sm:flex-row gap-3">
@@ -421,113 +449,138 @@ export default function App() {
             </section>
           )}
 
-          {/* Preguntas */}
+          {/* Pregunta de quorum */}
+          {questions
+            .filter((q) => q.isQuorumCheck && !q.closed)
+            .map((q) => (
+              <div
+                key={q.id}
+                className="rounded-2xl border border-blue-200 bg-blue-50 p-4 sm:p-5 shadow-sm"
+              >
+                <h3 className="text-base sm:text-lg font-semibold text-blue-700">
+                  {q.question}
+                  <span className="ml-2 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700">
+                    Quorum
+                  </span>
+                </h3>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2 md:grid-cols-3">
+                  {q.options.map((op) => (
+                    <button
+                      key={op}
+                      onClick={() => votar(q.id, [op], q)}
+                      disabled={q.closed}
+                      className="w-full rounded-lg bg-blue-600 px-3 py-2 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {op} ({q.votes[op]})
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+
+          {/* Preguntas normales */}
           <section className="space-y-4">
-            {questions.length === 0 && <p className="text-black/60">No hay preguntas aún.</p>}
+            {questions.filter((q) => !q.isQuorumCheck).length === 0 && (
+              <p className="text-black/60">No hay preguntas aún.</p>
+            )}
 
-            {questions.map((q) => {
-              const total = Object.values(q.votes).reduce((a, b) => a + b, 0);
-              const esMultiple = q.maxChoices > 1;
+            {questions
+              .filter((q) => !q.isQuorumCheck)
+              .map((q) => {
+                const total = Object.values(q.votes).reduce((a, b) => a + b, 0);
+                const esMultiple = q.maxChoices > 1;
 
-              return (
-                <div
-                  key={q.id}
-                  className="rounded-2xl border border-black/5 bg-white p-4 sm:p-5 shadow-sm"
-                >
-                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
-                    <h3 className="text-base sm:text-lg font-semibold">
-                      {q.question}{" "}
-                      {q.closed && (
-                        <span className="ml-2 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
-                          Cerrada
-                        </span>
-                      )}
-                      {q.isQuorumCheck && (
-                        <span className="ml-2 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700">
-                          Quorum
-                        </span>
-                      )}
-                    </h3>
-                    {auth.currentUser?.uid === adminUid && !q.closed && (
-                      <button
-                        onClick={() => cerrarPregunta(q.id)}
-                        className="text-xs sm:text-sm text-secondary hover:underline"
-                      >
-                        🔒 Cerrar
-                      </button>
-                    )}
-                  </div>
-
-                  <p className="mt-1 text-xs text-black/70">
-                    Total votos: <b>{total}</b> — Quorum actual:{" "}
-                    <b>{participants.length}</b>/<b>{roomData?.quorum}</b>
-                  </p>
-
-                  {/* Votación */}
-                  {!q.closed && (
-                    <div className="mt-3 space-y-2">
-                      {esMultiple ? (
-                        <div>
-                          {q.options.map((op) => (
-                            <label
-                              key={op}
-                              className="flex items-center gap-2 text-sm text-black/80"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={selectedOptions[q.id]?.includes(op) || false}
-                                onChange={(e) => {
-                                  const prev = selectedOptions[q.id] || [];
-                                  if (e.target.checked) {
-                                    if (prev.length < q.maxChoices) {
-                                      setSelectedOptions({
-                                        ...selectedOptions,
-                                        [q.id]: [...prev, op],
-                                      });
-                                    } else {
-                                      toast.error(
-                                        `⚠️ Solo puedes elegir hasta ${q.maxChoices} opciones`
-                                      );
-                                    }
-                                  } else {
-                                    setSelectedOptions({
-                                      ...selectedOptions,
-                                      [q.id]: prev.filter((x) => x !== op),
-                                    });
-                                  }
-                                }}
-                              />
-                              {op} ({q.votes[op]})
-                            </label>
-                          ))}
-                          <button
-                            onClick={() =>
-                              votar(q.id, selectedOptions[q.id] || [], q)
-                            }
-                            className="mt-2 w-full sm:w-auto rounded-lg bg-primary px-3 py-2 text-white text-sm hover:bg-primary-light"
-                          >
-                            Enviar voto
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-3">
-                          {q.options.map((op) => (
-                            <button
-                              key={op}
-                              onClick={() => votar(q.id, [op], q)}
-                              disabled={q.closed}
-                              className="w-full rounded-lg bg-primary px-3 py-2 text-white text-sm sm:text-base font-medium hover:bg-primary-light disabled:opacity-50"
-                            >
-                              {op} ({q.votes[op]})
-                            </button>
-                          ))}
-                        </div>
+                return (
+                  <div
+                    key={q.id}
+                    className="rounded-2xl border border-black/5 bg-white p-4 sm:p-5 shadow-sm"
+                  >
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                      <h3 className="text-base sm:text-lg font-semibold">
+                        {q.question}{" "}
+                        {q.closed && (
+                          <span className="ml-2 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
+                            Cerrada
+                          </span>
+                        )}
+                      </h3>
+                      {auth.currentUser?.uid === adminUid && !q.closed && (
+                        <button
+                          onClick={() => cerrarPregunta(q.id)}
+                          className="text-xs sm:text-sm text-secondary hover:underline"
+                        >
+                          🔒 Cerrar
+                        </button>
                       )}
                     </div>
-                  )}
-                </div>
-              );
-            })}
+
+                    <p className="mt-1 text-xs text-black/70">
+                      Total votos: <b>{total}</b> — Quorum actual:{" "}
+                      <b>{participants.length}</b>/<b>{roomData?.quorum}</b>
+                    </p>
+
+                    {!q.closed && (
+                      <div className="mt-3 space-y-2">
+                        {esMultiple ? (
+                          <div>
+                            {q.options.map((op) => (
+                              <label
+                                key={op}
+                                className="flex items-center gap-2 text-sm text-black/80"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={selectedOptions[q.id]?.includes(op) || false}
+                                  onChange={(e) => {
+                                    const prev = selectedOptions[q.id] || [];
+                                    if (e.target.checked) {
+                                      if (prev.length < q.maxChoices) {
+                                        setSelectedOptions({
+                                          ...selectedOptions,
+                                          [q.id]: [...prev, op],
+                                        });
+                                      } else {
+                                        toast.error(
+                                          `⚠️ Solo puedes elegir hasta ${q.maxChoices} opciones`
+                                        );
+                                      }
+                                    } else {
+                                      setSelectedOptions({
+                                        ...selectedOptions,
+                                        [q.id]: prev.filter((x) => x !== op),
+                                      });
+                                    }
+                                  }}
+                                />
+                                {op} ({q.votes[op]})
+                              </label>
+                            ))}
+                            <button
+                              onClick={() => votar(q.id, selectedOptions[q.id] || [], q)}
+                              className="mt-2 w-full sm:w-auto rounded-lg bg-primary px-3 py-2 text-white text-sm hover:bg-primary-light"
+                            >
+                              Enviar voto
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-3">
+                            {q.options.map((op) => (
+                              <button
+                                key={op}
+                                onClick={() => votar(q.id, [op], q)}
+                                disabled={q.closed}
+                                className="w-full rounded-lg bg-primary px-3 py-2 text-white text-sm sm:text-base font-medium hover:bg-primary-light disabled:opacity-50"
+                              >
+                                {op} ({q.votes[op]})
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
           </section>
         </main>
 
@@ -547,16 +600,13 @@ export default function App() {
   if (mode === "home") {
     return (
       <div className="min-h-screen flex flex-col bg-background">
-        {/* Header */}
         <header className="bg-primary text-white">
           <div className="mx-auto max-w-5xl px-3 sm:px-4 py-3 sm:py-4">
             <h1 className="text-lg sm:text-xl font-bold">🗳️ Mesas de Votación</h1>
           </div>
         </header>
 
-        {/* Main */}
         <main className="flex-1 mx-auto max-w-5xl px-3 sm:px-4 py-6 sm:py-10 space-y-8">
-          {/* Tu nombre */}
           <section className="rounded-2xl border border-black/5 bg-white p-6 shadow-sm max-w-lg mx-auto">
             <h3 className="text-base sm:text-lg font-semibold text-primary mb-4">Tu nombre</h3>
             <div className="flex flex-col sm:flex-row gap-3">
@@ -575,7 +625,6 @@ export default function App() {
             </div>
           </section>
 
-          {/* Menú de rol */}
           <div className="grid gap-6 sm:grid-cols-1 md:grid-cols-2">
             <section className="rounded-2xl border border-black/5 bg-white p-6 shadow-sm">
               <h3 className="text-base sm:text-lg font-semibold text-primary mb-3">Moderador</h3>
@@ -609,7 +658,6 @@ export default function App() {
           </div>
         </main>
 
-        {/* Footer */}
         <footer className="bg-primary-dark text-white mt-auto">
           <div className="mx-auto max-w-5xl px-2 sm:px-4 py-2 sm:py-3 text-center text-xs sm:text-sm opacity-90">
             © {new Date().getFullYear()} Mesas de Votación — Votaciones en tiempo real - GRZN 2025.
@@ -625,7 +673,6 @@ export default function App() {
   if (mode === "moderator") {
     return (
       <div className="min-h-screen flex flex-col bg-background">
-        {/* Header */}
         <header className="bg-primary text-white">
           <div className="mx-auto max-w-5xl px-3 sm:px-4 py-3 sm:py-4 flex items-center justify-between">
             <h1 className="text-lg sm:text-xl font-bold">Crear sala (Moderador)</h1>
@@ -638,7 +685,6 @@ export default function App() {
           </div>
         </header>
 
-        {/* Main */}
         <main className="flex-1 mx-auto max-w-5xl px-3 sm:px-4 py-6 sm:py-10">
           <section className="rounded-2xl border border-black/5 bg-white p-6 shadow-sm max-w-xl mx-auto">
             <h3 className="text-base sm:text-lg font-semibold text-primary mb-4">Configurar sala</h3>
@@ -711,7 +757,6 @@ export default function App() {
           </section>
         </main>
 
-        {/* Footer */}
         <footer className="bg-primary-dark text-white mt-auto">
           <div className="mx-auto max-w-5xl px-2 sm:px-4 py-2 sm:py-3 text-center text-xs sm:text-sm opacity-90">
             © {new Date().getFullYear()} Mesas de Votación — Votaciones en tiempo real.
@@ -727,7 +772,6 @@ export default function App() {
   if (mode === "voter") {
     return (
       <div className="min-h-screen flex flex-col bg-background">
-        {/* Header */}
         <header className="bg-primary text-white">
           <div className="mx-auto max-w-5xl px-3 sm:px-4 py-3 sm:py-4 flex items-center justify-between">
             <h1 className="text-lg sm:text-xl font-bold">Unirse a sala (Votante)</h1>
@@ -740,7 +784,6 @@ export default function App() {
           </div>
         </header>
 
-        {/* Main */}
         <main className="flex-1 mx-auto max-w-5xl px-3 sm:px-4 py-6 sm:py-10">
           <section className="rounded-2xl border border-black/5 bg-white p-6 shadow-sm max-w-xl mx-auto">
             <h3 className="text-base sm:text-lg font-semibold text-primary mb-4">Ingresar a una sala</h3>
@@ -781,7 +824,6 @@ export default function App() {
           </section>
         </main>
 
-        {/* Footer */}
         <footer className="bg-primary-dark text-white mt-auto">
           <div className="mx-auto max-w-5xl px-2 sm:px-4 py-2 sm:py-3 text-center text-xs sm:text-sm opacity-90">
             © {new Date().getFullYear()} Mesas de Votación — Votaciones en tiempo real - GRZN 2025.
