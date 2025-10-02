@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import { db, auth } from "./firebase";
 import {
   doc,
@@ -10,9 +10,6 @@ import {
   updateDoc,
   getDocs,
   deleteDoc,
-  serverTimestamp,
-  query,
-  orderBy,
 } from "firebase/firestore";
 import { Toaster, toast } from "react-hot-toast";
 import jsPDF from "jspdf";
@@ -35,28 +32,22 @@ export default function App() {
   const [isNameSaved, setIsNameSaved] = useState(!!localStorage.getItem("userName"));
 
   // crear/unirse
-  const [joinCode, setJoinCode] = useState("");
-
-  // moderador: parámetros de preguntas
   const [question, setQuestion] = useState("");
   const [optionsInput, setOptionsInput] = useState("");
+  const [joinCode, setJoinCode] = useState("");
+
+  // parámetros moderador
+  const [maxParticipants, setMaxParticipants] = useState("");
+  const [quorum, setQuorum] = useState("");
   const [maxChoices, setMaxChoices] = useState(""); // vacío por defecto
 
-  // moderador: configurar sala
-  const [maxParticipants, setMaxParticipants] = useState("");
-
-  // respuesta múltiple (cliente)
+  // para respuesta múltiple
   const [selectedOptions, setSelectedOptions] = useState({});
 
-  // Delegación (UI al unirse como votante)
-  const [hasDelegation, setHasDelegation] = useState(false);
-  const [delegateName, setDelegateName] = useState("");
-
   /* ----------------------- helpers ----------------------- */
-
   const handleSetName = () => {
     if (!userName.trim()) return toast.error("⚠️ Escribe tu nombre");
-    localStorage.setItem("userName", userName.trim());
+    localStorage.setItem("userName", userName);
     setIsNameSaved(true);
     toast.success("✅ Nombre guardado");
   };
@@ -69,137 +60,138 @@ export default function App() {
     return arr.length ? arr : ["Sí", "No"];
   };
 
-  const sortOptions = (opts, votesObj) =>
-    [...opts].sort((a, b) => (votesObj?.[b] || 0) - (votesObj?.[a] || 0));
-
-  const randomCode = (n = 5) => {
-    const A = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    return Array.from({ length: n }, () => A[Math.floor(Math.random() * A.length)]).join("");
-  };
-
-  /* ----------------------- PDF (global) ----------------------- */
-
-  const generarPDFSala = () => {
+  const generarPDF = () => {
     const pdf = new jsPDF();
     const fecha = new Date().toLocaleString();
 
     pdf.text(`Resultados de votación`, 14, 14);
     pdf.text(`Sala: ${code}`, 14, 22);
     pdf.text(`Fecha: ${fecha}`, 14, 30);
+    pdf.text(`Quorum requerido: ${roomData?.quorum}`, 14, 38);
+    pdf.text(`Quorum actual: ${participants.length}`, 14, 46);
 
-    let startY = 38;
+    let startY = 54;
     questions
-      .filter((q) => !q.isPresenceSurvey) // excluir encuesta de votantes activos
+      .filter((q) => !q.isQuorumCheck) // excluir preguntas de quorum
       .forEach((pregunta, idx) => {
-        const qd = pregunta;
-        const quorumDecisorio = Math.floor((qd.npvp || 0) / 2) + 1;
-
-        pdf.setFontSize(12);
-        pdf.text(`${idx + 1}. ${qd.question}`, 14, startY);
-        pdf.setFontSize(10);
-        pdf.text(
-          `NPVP: ${qd.npvp || 0} · Quorum decisorio: ${quorumDecisorio}`,
-          14,
-          startY + 6
-        );
+        pdf.text(`${idx + 1}. ${pregunta.question}`, 14, startY);
 
         autoTable(pdf, {
-          startY: startY + 10,
+          startY: startY + 4,
           head: [["Opción", "Votos"]],
-          body: sortOptions(qd.options, qd.votes).map((o) => [o, String(qd.votes[o] || 0)]),
-          styles: { fontSize: 10 },
+          body: pregunta.options.map((o) => [o, String(pregunta.votes[o] || 0)]),
+          styles: { fontSize: 11 },
         });
 
-        startY = pdf.lastAutoTable.finalY + 10;
+        // quorum alcanzado sí/no
+        const quorumNecesario = roomData?.quorum || 1;
+        const quorumAlcanzado = participants.length >= quorumNecesario ? "Sí" : "No";
+        pdf.text(
+          `Quorum alcanzado: ${quorumAlcanzado} (${participants.length}/${quorumNecesario})`,
+          14,
+          pdf.lastAutoTable.finalY + 8
+        );
+
+        startY = pdf.lastAutoTable.finalY + 16;
       });
 
     pdf.save(`informe_sala_${code}.pdf`);
   };
 
-  // PDF individual por pregunta (se llama al cerrar)
-  const generarPDFPregunta = async (qId) => {
-    const qRef = doc(db, "rooms", code, "questions", qId);
-    const qSnap = await getDoc(qRef);
-    if (!qSnap.exists()) return;
-    const q = { id: qSnap.id, ...qSnap.data() };
-
-    const pdf = new jsPDF();
-    pdf.setFontSize(14);
-    pdf.text(`Resultados de la pregunta`, 14, 14);
-    pdf.setFontSize(12);
-    pdf.text(String(q.question || ""), 14, 22);
-
-    if (q.isPresenceSurvey) {
-      pdf.text(`Encuesta de votantes activos (NPVP)`, 14, 30);
-    } else {
-      const quorumDecisorio = Math.floor((q.npvp || 0) / 2) + 1;
-      pdf.text(`NPVP: ${q.npvp || 0} · Quorum decisorio: ${quorumDecisorio}`, 14, 30);
+  const expulsarParticipante = (uid, name) => {
+    if (!auth.currentUser || auth.currentUser.uid !== adminUid) {
+      return toast.error("🚫 Solo el moderador puede expulsar");
     }
 
-    const opcionesOrden = sortOptions(q.options || [], q.votes || {});
-    autoTable(pdf, {
-      startY: 36,
-      head: [["Opción", "Votos"]],
-      body: opcionesOrden.map((o) => [o, String(q.votes?.[o] || 0)]),
-      styles: { fontSize: 11 },
-    });
-
-    // listado privado (usa los nombres guardados en voters)
-    const bodyY = pdf.lastAutoTable ? pdf.lastAutoTable.finalY + 8 : 36;
-    pdf.setFontSize(11);
-    pdf.text("Votantes (privado - sólo moderador)", 14, bodyY);
-    let y = bodyY + 6;
-
-    (q.voters || []).forEach((v) => {
-      const label = `${v.name || v.uid} — votos en este envío: ${(v.choices || []).length}`;
-      pdf.text(label, 14, y);
-      y += 6;
-    });
-
-    const safe = (q.question || `pregunta_${qId}`).slice(0, 60);
-    pdf.save(`resultado_${safe}.pdf`);
+    toast((t) => (
+      <div className="flex flex-col gap-2">
+        <p className="text-sm">¿Expulsar a <b>{name}</b>?</p>
+        <div className="flex gap-2 justify-end">
+          <button
+            onClick={async () => {
+              try {
+                await deleteDoc(doc(db, "rooms", code, "participants", uid));
+                toast.dismiss(t.id);
+                toast.success(`👋 ${name} fue expulsado`);
+              } catch (err) {
+                console.error(err);
+                toast.error("❌ Error al expulsar participante");
+              }
+            }}
+            className="px-3 py-1 rounded bg-red-600 text-white text-xs"
+          >
+            Sí, expulsar
+          </button>
+          <button
+            onClick={() => toast.dismiss(t.id)}
+            className="px-3 py-1 rounded bg-gray-300 text-xs"
+          >
+            Cancelar
+          </button>
+        </div>
+      </div>
+    ));
   };
 
   /* ----------------------- lógica ----------------------- */
-
-  // Crear sala (sin pregunta inicial, sin “quorum requerido”)
   const createRoom = async () => {
     if (!isNameSaved) return toast.error("💾 Guarda tu nombre primero");
-    if (!auth.currentUser) return toast.error("🔐 Debes estar autenticado");
+    if (!question.trim()) return toast.error("❓ Escribe la primera pregunta");
 
     const max = Number(maxParticipants);
+    const quo = Number(quorum);
+    const choices = Number(maxChoices) || 1; // si está vacío, usar 1
+
     if (!Number.isFinite(max) || max < 1) return toast.error("👥 Máximo de participantes inválido");
+    if (!Number.isFinite(quo) || quo < 1) return toast.error("🧮 Quorum inválido");
+    if (quo > max) return toast.error("⚠️ El quorum no puede ser mayor al máximo de participantes");
+    if (!Number.isFinite(choices) || choices < 1) return toast.error("⚠️ Máx. opciones inválido");
 
-    const newCode = randomCode(5);
+    const newCode = Math.random().toString(36).substring(2, 7).toUpperCase();
+    const user = auth.currentUser;
+
     await setDoc(doc(db, "rooms", newCode), {
-      createdAt: serverTimestamp(),
-      adminUid: auth.currentUser.uid,
-      adminName: userName.trim(),
+      createdAt: Date.now(),
+      adminUid: user ? user.uid : null,
+      adminName: userName,
       maxParticipants: max,
-      npvp: 0,
-      npvpUpdatedAt: null,
-      npvpInitialized: false,
+      quorum: quo,
     });
 
-    // Registrar moderador como participante (sin delegación)
-    await setDoc(doc(db, "rooms", newCode, "participants", auth.currentUser.uid), {
-      uid: auth.currentUser.uid,
-      name: userName.trim(),
-      joinedAt: Date.now(),
-      hasDelegation: false,
-      delegateName: null,
+    const options = parseOptions(optionsInput);
+    const votesObj = Object.fromEntries(options.map((o) => [o, 0]));
+
+    await addDoc(collection(db, "rooms", newCode, "questions"), {
+      question,
+      options,
+      votes: votesObj,
+      closed: false,
+      voters: [],
+      maxChoices: choices,
+      isQuorumCheck: false,
     });
+
+    if (user) {
+      await setDoc(doc(db, "rooms", newCode, "participants", user.uid), {
+        uid: user.uid,
+        name: userName,
+        joinedAt: Date.now(),
+      });
+    }
 
     setCode(newCode);
     setMode("room");
+    setQuestion("");
+    setOptionsInput("");
     setMaxParticipants("");
-    toast.success("🎉 Sala creada. Lanza la encuesta de votantes activos.");
+    setQuorum("");
+    setMaxChoices("");
+    toast.success("🎉 Sala creada con éxito");
   };
 
   const joinRoom = async () => {
     if (!isNameSaved) return toast.error("💾 Guarda tu nombre primero");
     if (!joinCode.trim()) return toast.error("🔑 Escribe un código");
-    if (!auth.currentUser) return toast.error("🔐 Debes estar autenticado");
 
     const roomId = joinCode.toUpperCase();
     const ref = doc(db, "rooms", roomId);
@@ -221,13 +213,14 @@ export default function App() {
       return toast.error("🚫 Ese nombre ya está en uso en la sala");
     }
 
-    await setDoc(doc(db, "rooms", roomId, "participants", auth.currentUser.uid), {
-      uid: auth.currentUser.uid,
-      name: userName.trim(),
-      joinedAt: Date.now(),
-      hasDelegation: !!hasDelegation,
-      delegateName: hasDelegation && delegateName.trim() ? delegateName.trim() : null,
-    });
+    const user = auth.currentUser;
+    if (user) {
+      await setDoc(doc(db, "rooms", roomId, "participants", user.uid), {
+        uid: user.uid,
+        name: userName,
+        joinedAt: Date.now(),
+      });
+    }
 
     setCode(roomId);
     setMode("room");
@@ -242,18 +235,29 @@ export default function App() {
         const d = snap.data();
         setAdminUid(d.adminUid);
         setAdminName(d.adminName);
-        setRoomData({ id: snap.id, ...d });
+        setRoomData(d);
       }
     });
 
-    const unsubQs = onSnapshot(
-      query(collection(db, "rooms", code, "questions"), orderBy("createdAt", "asc")),
-      (snap) => {
-        const qs = [];
-        snap.forEach((d) => qs.push({ id: d.id, ...d.data() }));
-        setQuestions(qs);
-      }
-    );
+    const unsubQs = onSnapshot(collection(db, "rooms", code, "questions"), (snap) => {
+      const qs = [];
+      snap.forEach((d) => qs.push({ id: d.id, ...d.data() }));
+      setQuestions(qs);
+
+      qs.forEach(async (q) => {
+        if (q.isQuorumCheck && !q.closed) {
+          const votosSi = q.votes?.["Sí"] || 0;
+          const quorumNecesario = roomData?.quorum || 1; // valor exacto definido por el moderador
+
+          if (votosSi >= quorumNecesario) {
+            await updateDoc(doc(db, "rooms", code, "questions", q.id), { closed: true });
+            toast.success("✅ Quorum confirmado automáticamente");
+          }
+        }
+      });
+
+    });
+
 
     const unsubParticipants = onSnapshot(
       collection(db, "rooms", code, "participants"),
@@ -262,7 +266,6 @@ export default function App() {
         snap.forEach((d) => ps.push(d.data()));
         setParticipants(ps);
 
-        // auto-salida si te expulsan
         const user = auth.currentUser;
         if (user && !ps.some((p) => p.uid === user.uid)) {
           setMode("home");
@@ -279,165 +282,61 @@ export default function App() {
     };
   }, [code]);
 
-  // Lanza ENCUESTA DE VOTANTES ACTIVOS
-  const launchPresenceSurvey = async () => {
-    if (!auth.currentUser || auth.currentUser.uid !== adminUid)
-      return toast.error("🚫 Solo el moderador puede lanzar la encuesta");
+  const addQuestion = async (isQuorumCheck = false) => {
+    if (!isQuorumCheck && !question.trim()) return toast.error("❓ Escribe una pregunta");
 
-    await addDoc(collection(db, "rooms", code, "questions"), {
-      question: "¿Confirmas que estás presente y activo/a para votar?",
-      options: ["Sí", "No"],
-      votes: { "Sí": 0, "No": 0 },
-      voters: [], // [{ uid, name, choices: ['Sí'] }]
-      maxChoices: 1,
-      isPresenceSurvey: true,
-      closed: false,
-      createdAt: Date.now(),
-      npvp: roomData?.npvp || 0, // snapshot previo
-    });
-
-    toast.success("🧮 Encuesta de votantes activos lanzada");
-  };
-
-  // Cerrar pregunta (si es de presencia => calcula NPVP y habilita crear preguntas)
-  const cerrarPregunta = async (qId, qData) => {
-    if (!auth.currentUser || auth.currentUser.uid !== adminUid)
-      return toast.error("🚫 Solo el moderador puede cerrar");
-
-    await updateDoc(doc(db, "rooms", code, "questions", qId), { closed: true });
-
-    if (qData.isPresenceSurvey) {
-      const fresh = await getDoc(doc(db, "rooms", code, "questions", qId));
-      const pq = fresh.data();
-
-      // NPVP = # de votantes que marcaron "Sí" (no pondera delegación)
-      const npvp = (pq.voters || []).filter((v) => (v.choices || []).includes("Sí")).length;
-
-      await updateDoc(doc(db, "rooms", code), {
-        npvp,
-        npvpUpdatedAt: Date.now(),
-        npvpInitialized: true,
-      });
-
-      toast.success(`✅ NPVP actualizado: ${npvp}. Ya puedes crear preguntas.`);
-    } else {
-      toast.success("🔒 Pregunta cerrada");
-    }
-
-    // PDF individual de esta pregunta
-    await generarPDFPregunta(qId);
-  };
-
-  // Crear PREGUNTA NORMAL (bloqueada hasta npvpInitialized)
-  const addQuestion = async () => {
-    if (!auth.currentUser || auth.currentUser.uid !== adminUid)
-      return toast.error("🚫 Solo el moderador puede crear preguntas");
-
-    if (!roomData?.npvpInitialized)
-      return toast.error("⚠️ Primero debes confirmar votantes activos (NPVP).");
-
-    if (!question.trim()) return toast.error("❓ Escribe una pregunta");
-    const options = parseOptions(optionsInput);
+    const options = isQuorumCheck ? ["Sí",] : parseOptions(optionsInput);
     const votesObj = Object.fromEntries(options.map((o) => [o, 0]));
-    const choices = Number(maxChoices) || 1;
 
     await addDoc(collection(db, "rooms", code, "questions"), {
-      question: question.trim(),
+      question: isQuorumCheck ? "¿Confirmas tu presencia para el quorum?" : question,
       options,
       votes: votesObj,
-      voters: [], // guardaremos una entrada por envío (si hay delegación, podrá haber 2)
-      maxChoices: choices,
-      isPresenceSurvey: false,
       closed: false,
-      createdAt: Date.now(),
-      npvp: roomData?.npvp || 0, // snapshot NPVP
+      voters: [],
+      maxChoices: isQuorumCheck ? 1 : Number(maxChoices),
+      isQuorumCheck,
     });
 
     setQuestion("");
     setOptionsInput("");
-    setMaxChoices("");
-    toast.success("➕ Pregunta agregada");
+    setMaxChoices("1");
+    toast.success(isQuorumCheck ? "🧮 Pregunta de quorum lanzada" : "➕ Pregunta agregada");
   };
 
-  // Votar
-  // - Moderador NO puede votar.
-  // - Presencia: límite 1 para todos.
-  // - Normal: límite 2 si hasDelegation, si no 1; puede enviar en dos tandas.
-  // - Etiquetado si hay delegación: primer voto con su nombre, segundo "en representación de X".
   const votar = async (qId, opcionesSeleccionadas, qData) => {
+    if (qData.closed) return toast.error("🔒 Pregunta cerrada");
+    if (participants.length < (roomData?.quorum || 1)) {
+      return toast.error("⚠️ Aún no se alcanza el quorum para votar");
+    }
+
     const user = auth.currentUser;
     if (!user) return toast.error("🚫 No estás autenticado");
 
-    // **Bloqueo moderador votando**
-    if (user.uid === adminUid) {
-      return toast.error("👀 El moderador no vota, solo modera.");
+    const name = localStorage.getItem("userName") || "Anónimo";
+    if (qData.voters.some((v) => v.uid === user.uid)) {
+      return toast.error("🙅 Ya votaste en esta pregunta");
     }
 
-    if (qData.closed) return toast.error("🔒 Pregunta cerrada");
-
-    // info del participante
-    const myPartSnap = await getDoc(doc(db, "rooms", code, "participants", user.uid));
-    const me = myPartSnap.data() || {};
-    const limit = qData.isPresenceSurvey ? 1 : (me.hasDelegation ? 2 : 1);
-
-    // cuántas veces ya votaste en esta pregunta
-    const yaVeces = (qData.voters || []).filter((v) => v.uid === user.uid).length;
-    if (yaVeces >= limit) {
-      return toast.error(
-        qData.isPresenceSurvey
-          ? "Solo puedes responder una vez la encuesta de votantes activos."
-          : "Ya alcanzaste tu límite de votos para esta pregunta."
-      );
-    }
-
-    // maxChoices se aplica por envío (solo preguntas normales)
-    if (!qData.isPresenceSurvey && qData.maxChoices > 0 && (opcionesSeleccionadas || []).length > qData.maxChoices) {
-      return toast.error(`⚠️ Máximo ${qData.maxChoices} opciones por envío`);
-    }
-
-    // Incremento de votos
-    const newVotes = { ...(qData.votes || {}) };
-    (opcionesSeleccionadas || []).forEach((op) => {
+    const newVotes = { ...qData.votes };
+    opcionesSeleccionadas.forEach((op) => {
       newVotes[op] = (newVotes[op] || 0) + 1;
     });
 
-    // **Nombre mostrado** (delegación)
-    let displayName = localStorage.getItem("userName") || "Anónimo";
-    if (!qData.isPresenceSurvey && me.hasDelegation) {
-      if (yaVeces === 1) {
-        const rep = me.delegateName?.trim() || "su delegado";
-        displayName = `${displayName} en representación de ${rep}`;
-      }
-      // yaVeces === 0: se queda como su nombre normal
-    }
-
     await updateDoc(doc(db, "rooms", code, "questions", qId), {
       votes: newVotes,
-      voters: [
-        ...(qData.voters || []),
-        { uid: user.uid, name: displayName, choices: opcionesSeleccionadas },
-      ],
+      voters: [...qData.voters, { uid: user.uid, name }],
     });
 
-    const idx = yaVeces + 1;
-    const tail =
-      !qData.isPresenceSurvey && me.hasDelegation && limit === 2 ? ` (voto ${idx}/2)` : "";
-    toast.success("🗳️ Voto registrado" + tail);
+    toast.success("🗳️ Voto registrado");
   };
 
-  const expulsarParticipante = (uid, name) => {
-    if (!auth.currentUser || auth.currentUser.uid !== adminUid) {
-      return toast.error("🚫 Solo el moderador puede expulsar");
-    }
-    deleteDoc(doc(db, "rooms", code, "participants", uid))
-      .then(() => toast.success(`👋 ${name} fue expulsado`))
-      .catch(() => toast.error("❌ Error al expulsar participante"));
+  const cerrarPregunta = async (qId) => {
+    await updateDoc(doc(db, "rooms", code, "questions", qId), { closed: true });
+    toast.success("🔒 Pregunta cerrada");
   };
 
-  /* ----------------------- Vistas ----------------------- */
-
-  const isAdmin = useMemo(() => auth.currentUser?.uid === adminUid, [adminUid]);
-
+  /* ----------------------- VISTAS ----------------------- */
   // ========= ROOM =========
   if (mode === "room") {
     return (
@@ -447,27 +346,24 @@ export default function App() {
           <div className="mx-auto max-w-5xl px-4 py-3 flex items-center justify-between">
             <h1 className="text-lg sm:text-xl font-bold">
               🗳️ Sala #{code}
-              {isAdmin ? ` — Hola, ${userName} (Moderador)` : ` — Hola, ${userName}`}
+              {auth.currentUser?.uid === adminUid
+                ? ` — Hola, ${userName} (Moderador)`
+                : ` — Hola, ${userName}`}
             </h1>
-            <div className="flex items-center gap-3">
-              {isAdmin && (
-                <button
-                  onClick={generarPDFSala}
-                  className="text-xs sm:text-sm underline decoration-white/60 hover:decoration-white"
-                >
-                  📄 Descargar informe
-                </button>
-              )}
+            {auth.currentUser?.uid === adminUid && (
               <button
-                className="text-xs sm:text-sm underline decoration-white/60 hover:decoration-white"
-                onClick={() => {
-                  setMode("home");
-                  setCode(null);
-                }}
+                onClick={generarPDF}
+                className="ml-4 text-xs sm:text-sm underline decoration-white/60 hover:decoration-white"
               >
-                Salir
+                📄 Descargar informe
               </button>
-            </div>
+            )}
+            <button
+              className="ml-4 text-xs sm:text-sm underline decoration-white/60 hover:decoration-white"
+              onClick={() => setMode("home")}
+            >
+              Salir
+            </button>
           </div>
         </header>
 
@@ -480,8 +376,8 @@ export default function App() {
                 Participantes ({participants.length}/{roomData?.maxParticipants ?? "∞"})
               </h2>
               <div className="text-xs sm:text-sm text-black/70">
-                NPVP actual: <b>{roomData?.npvp ?? 0}</b>{" "}
-                {roomData?.npvpInitialized ? "(habilitado)" : "(pendiente inicializar)"}
+                Quorum requerido: <b>{roomData?.quorum ?? "-"}</b> — Quorum actual:{" "}
+                <b>{participants.length}</b>
               </div>
             </div>
 
@@ -496,11 +392,8 @@ export default function App() {
                     {p.uid === adminUid && (
                       <span className="ml-1 text-xs text-primary">(Moderador)</span>
                     )}
-                    {p.hasDelegation && (
-                      <span className="ml-1 text-xs text-secondary">(delegación)</span>
-                    )}
                   </span>
-                  {isAdmin && p.uid !== adminUid && (
+                  {auth.currentUser?.uid === adminUid && p.uid !== adminUid && (
                     <button
                       onClick={() => expulsarParticipante(p.uid, p.name)}
                       className="flex items-center gap-1 text-xs text-red-600 hover:underline"
@@ -513,65 +406,52 @@ export default function App() {
             </ul>
           </section>
 
-          {/* Controles moderador */}
-          {isAdmin && (
+          {/* Crear pregunta (admin) */}
+          {auth.currentUser?.uid === adminUid && (
             <section className="rounded-2xl border border-black/5 bg-white p-4 sm:p-6 shadow-sm">
-              <h2 className="text-sm font-medium text-primary mb-2">Moderación</h2>
-              <div className="flex flex-col sm:flex-row gap-3">
-                <button
-                  onClick={launchPresenceSurvey}
-                  className="flex-1 rounded-lg bg-secondary px-4 py-2 text-white font-medium hover:opacity-90"
-                >
-                  Encuesta de votantes activos
-                </button>
+              <h2 className="text-sm font-medium text-primary mb-2">Nueva pregunta</h2>
+              <div className="flex flex-col gap-3 max-w-2xl">
+                <input
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  placeholder="Escribe la pregunta"
+                  className="w-full rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
+                />
+                <input
+                  value={optionsInput}
+                  onChange={(e) => setOptionsInput(e.target.value)}
+                  placeholder="Opciones separadas por comas (ej: Sí,No,Abstención)"
+                  className="w-full rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
+                />
+                <input
+                  type="number"
+                  min={1}
+                  value={maxChoices}
+                  onChange={(e) => setMaxChoices(e.target.value)}
+                  placeholder="Máximo de opciones seleccionables"
+                  className="rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
+                />
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <button
+                    onClick={() => addQuestion(false)}
+                    className="flex-1 rounded-lg bg-primary px-4 py-2 text-white font-medium hover:bg-primary-light"
+                  >
+                    Agregar pregunta
+                  </button>
+                  <button
+                    onClick={() => addQuestion(true)}
+                    className="flex-1 rounded-lg bg-secondary px-4 py-2 text-white font-medium hover:opacity-90"
+                  >
+                    Lanzar confirmación de quorum
+                  </button>
+                </div>
               </div>
             </section>
           )}
 
-          {/* Crear pregunta (admin) */}
-          {isAdmin && (
-            <section className="rounded-2xl border border-black/5 bg-white p-4 sm:p-6 shadow-sm">
-              <h2 className="text-sm font-medium text-primary mb-2">Nueva pregunta</h2>
-              {roomData?.npvpInitialized ? (
-                <div className="flex flex-col gap-3 max-w-2xl">
-                  <input
-                    value={question}
-                    onChange={(e) => setQuestion(e.target.value)}
-                    placeholder="Escribe la pregunta"
-                    className="w-full rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
-                  />
-                  <input
-                    value={optionsInput}
-                    onChange={(e) => setOptionsInput(e.target.value)}
-                    placeholder="Opciones separadas por comas (ej: Sí,No,Abstención)"
-                    className="w-full rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
-                  />
-                  <input
-                    type="number"
-                    min={1}
-                    value={maxChoices}
-                    onChange={(e) => setMaxChoices(e.target.value)}
-                    placeholder="Máximo de opciones seleccionables"
-                    className="rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
-                  />
-                  <button
-                    onClick={addQuestion}
-                    className="w-full sm:w-auto rounded-lg bg-primary px-4 py-2 text-white font-medium hover:bg-primary-light"
-                  >
-                    Agregar pregunta
-                  </button>
-                </div>
-              ) : (
-                <p className="text-sm text-black/70">
-                  Debes cerrar la <b>Encuesta de votantes activos</b> para habilitar la creación de preguntas.
-                </p>
-              )}
-            </section>
-          )}
-
-          {/* Encuesta de votantes activos (abierta) */}
+          {/* Pregunta de quorum */}
           {questions
-            .filter((q) => q.isPresenceSurvey && !q.closed)
+            .filter((q) => q.isQuorumCheck && !q.closed)
             .map((q) => (
               <div
                 key={q.id}
@@ -580,7 +460,7 @@ export default function App() {
                 <h3 className="text-base sm:text-lg font-semibold text-blue-700">
                   {q.question}
                   <span className="ml-2 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700">
-                    Encuesta de votantes activos
+                    Quorum
                   </span>
                 </h3>
                 <div className="mt-3 grid gap-2 sm:grid-cols-2 md:grid-cols-3">
@@ -588,38 +468,27 @@ export default function App() {
                     <button
                       key={op}
                       onClick={() => votar(q.id, [op], q)}
-                      disabled={q.closed || isAdmin} // moderador no puede votar
+                      disabled={q.closed}
                       className="w-full rounded-lg bg-blue-600 px-3 py-2 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
                     >
-                      {op} ({q.votes[op] || 0})
+                      {op} ({q.votes[op]})
                     </button>
                   ))}
                 </div>
-                {isAdmin && (
-                  <div className="mt-3">
-                    <button
-                      onClick={() => cerrarPregunta(q.id, q)}
-                      className="text-sm text-secondary hover:underline"
-                    >
-                      🔒 Cerrar encuesta y fijar NPVP
-                    </button>
-                  </div>
-                )}
               </div>
             ))}
 
           {/* Preguntas normales */}
           <section className="space-y-4">
-            {questions.filter((q) => !q.isPresenceSurvey).length === 0 && (
+            {questions.filter((q) => !q.isQuorumCheck).length === 0 && (
               <p className="text-black/60">No hay preguntas aún.</p>
             )}
 
             {questions
-              .filter((q) => !q.isPresenceSurvey)
+              .filter((q) => !q.isQuorumCheck)
               .map((q) => {
-                const total = Object.values(q.votes || {}).reduce((a, b) => a + b, 0);
-                const opcionesOrden = sortOptions(q.options || [], q.votes || {});
-                const quorumDecisorio = Math.floor((q.npvp || 0) / 2) + 1;
+                const total = Object.values(q.votes).reduce((a, b) => a + b, 0);
+                const esMultiple = q.maxChoices > 1;
 
                 return (
                   <div
@@ -635,9 +504,9 @@ export default function App() {
                           </span>
                         )}
                       </h3>
-                      {isAdmin && !q.closed && (
+                      {auth.currentUser?.uid === adminUid && !q.closed && (
                         <button
-                          onClick={() => cerrarPregunta(q.id, q)}
+                          onClick={() => cerrarPregunta(q.id)}
                           className="text-xs sm:text-sm text-secondary hover:underline"
                         >
                           🔒 Cerrar
@@ -646,14 +515,14 @@ export default function App() {
                     </div>
 
                     <p className="mt-1 text-xs text-black/70">
-                      Total votos: <b>{total}</b> — NPVP (pregunta): <b>{q.npvp || 0}</b> — Quorum
-                      decisorio: <b>{quorumDecisorio}</b>
+                      Total votos: <b>{total}</b> — Quorum actual:{" "}
+                      <b>{participants.length}</b>/<b>{roomData?.quorum}</b>
                     </p>
 
                     {!q.closed && (
-                      <div className="mt-3">
-                        {q.maxChoices > 1 ? (
-                          <div className="space-y-2">
+                      <div className="mt-3 space-y-2">
+                        {esMultiple ? (
+                          <div>
                             {q.options.map((op) => (
                               <label
                                 key={op}
@@ -683,48 +552,29 @@ export default function App() {
                                     }
                                   }}
                                 />
-                                {op} ({q.votes[op] || 0})
+                                {op} ({q.votes[op]})
                               </label>
                             ))}
                             <button
                               onClick={() => votar(q.id, selectedOptions[q.id] || [], q)}
-                              disabled={isAdmin} // moderador no puede enviar
-                              className="mt-2 w-full sm:w-auto rounded-lg bg-primary px-3 py-2 text-white text-sm hover:bg-primary-light disabled:opacity-50"
+                              className="mt-2 w-full sm:w-auto rounded-lg bg-primary px-3 py-2 text-white text-sm hover:bg-primary-light"
                             >
                               Enviar voto
                             </button>
                           </div>
                         ) : (
                           <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-3">
-                            {opcionesOrden.map((op) => (
+                            {q.options.map((op) => (
                               <button
                                 key={op}
                                 onClick={() => votar(q.id, [op], q)}
-                                disabled={q.closed || isAdmin} // moderador no puede votar
+                                disabled={q.closed}
                                 className="w-full rounded-lg bg-primary px-3 py-2 text-white text-sm sm:text-base font-medium hover:bg-primary-light disabled:opacity-50"
                               >
-                                {op} ({q.votes[op] || 0})
+                                {op} ({q.votes[op]})
                               </button>
                             ))}
                           </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Votantes (privado para moderador) */}
-                    {isAdmin && (
-                      <div className="mt-3">
-                        <div className="text-xs font-semibold text-primary">Votantes (privado)</div>
-                        {(q.voters || []).length === 0 ? (
-                          <div className="text-xs text-black/60">Sin votos registrados aún.</div>
-                        ) : (
-                          <ul className="text-xs space-y-1 mt-1">
-                            {(q.voters || []).map((v, idx) => (
-                              <li key={`${v.uid}-${idx}`} className="text-black/80">
-                                {v.name || v.uid} — votos en este envío: {(v.choices || []).length}
-                              </li>
-                            ))}
-                          </ul>
                         )}
                       </div>
                     )}
@@ -779,14 +629,13 @@ export default function App() {
             <section className="rounded-2xl border border-black/5 bg-white p-6 shadow-sm">
               <h3 className="text-base sm:text-lg font-semibold text-primary mb-3">Moderador</h3>
               <p className="text-sm text-black/70 mb-4">
-                Crea una sala y define el máximo de participantes. Luego confirma votantes activos.
+                Crea una sala, define máximo de participantes y quorum.
               </p>
               <button
                 onClick={() => setMode("moderator")}
                 disabled={!isNameSaved}
-                className={`w-full sm:w-auto rounded-lg px-4 py-2 font-medium text-white ${
-                  isNameSaved ? "bg-primary hover:bg-primary-light" : "bg-gray-400 cursor-not-allowed"
-                }`}
+                className={`w-full sm:w-auto rounded-lg px-4 py-2 font-medium text-white ${isNameSaved ? "bg-primary hover:bg-primary-light" : "bg-gray-400 cursor-not-allowed"
+                  }`}
               >
                 Continuar como moderador
               </button>
@@ -800,9 +649,8 @@ export default function App() {
               <button
                 onClick={() => setMode("voter")}
                 disabled={!isNameSaved}
-                className={`w-full sm:w-auto rounded-lg px-4 py-2 font-medium text-white ${
-                  isNameSaved ? "bg-secondary hover:opacity-90" : "bg-gray-400 cursor-not-allowed"
-                }`}
+                className={`w-full sm:w-auto rounded-lg px-4 py-2 font-medium text-white ${isNameSaved ? "bg-secondary hover:opacity-90" : "bg-gray-400 cursor-not-allowed"
+                  }`}
               >
                 Continuar como votante
               </button>
@@ -866,14 +714,42 @@ export default function App() {
                   placeholder="Número máximo de participantes"
                   className="rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
                 />
+                <input
+                  type="number"
+                  min={1}
+                  value={quorum}
+                  onChange={(e) => setQuorum(e.target.value)}
+                  placeholder="Quorum mínimo requerido"
+                  className="rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
+                />
               </div>
+
+              <input
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                placeholder="Escribe la primera pregunta de la sala"
+                className="rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
+              />
+              <input
+                value={optionsInput}
+                onChange={(e) => setOptionsInput(e.target.value)}
+                placeholder="Opciones separadas por comas (ej: Sí,No,Abstención)"
+                className="rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
+              />
+              <input
+                type="number"
+                min={1}
+                value={maxChoices}
+                onChange={(e) => setMaxChoices(e.target.value)}
+                placeholder="Máximo de opciones seleccionables"
+                className="rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
+              />
 
               <button
                 onClick={createRoom}
                 disabled={!isNameSaved}
-                className={`w-full sm:w-auto rounded-lg px-4 py-2 font-medium text-white ${
-                  isNameSaved ? "bg-primary hover:bg-primary-light" : "bg-gray-400 cursor-not-allowed"
-                }`}
+                className={`w-full sm:w-auto rounded-lg px-4 py-2 font-medium text-white ${isNameSaved ? "bg-primary hover:bg-primary-light" : "bg-gray-400 cursor-not-allowed"
+                  }`}
               >
                 Crear sala
               </button>
@@ -938,34 +814,12 @@ export default function App() {
                 <button
                   onClick={joinRoom}
                   disabled={!isNameSaved}
-                  className={`w-full sm:w-auto rounded-lg px-4 py-2 font-medium text-white ${
-                    isNameSaved ? "bg-secondary hover:opacity-90" : "bg-gray-400 cursor-not-allowed"
-                  }`}
+                  className={`w-full sm:w-auto rounded-lg px-4 py-2 font-medium text-white ${isNameSaved ? "bg-secondary hover:opacity-90" : "bg-gray-400 cursor-not-allowed"
+                    }`}
                 >
                   Entrar
                 </button>
               </div>
-
-              {/* Delegación de voto */}
-              <div className="flex items-center gap-2 mt-2">
-                <input
-                  id="delegation"
-                  type="checkbox"
-                  checked={hasDelegation}
-                  onChange={(e) => setHasDelegation(e.target.checked)}
-                />
-                <label htmlFor="delegation" className="text-sm text-black/80">
-                  Cuento con delegación de voto
-                </label>
-              </div>
-              {hasDelegation && (
-                <input
-                  value={delegateName}
-                  onChange={(e) => setDelegateName(e.target.value)}
-                  placeholder="Nombre de la persona que representas (opcional)"
-                  className="rounded-lg border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
-                />
-              )}
             </div>
           </section>
         </main>
