@@ -1,7 +1,12 @@
-// Importar Firebase
+// firebase.js
 import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
-import { getAuth, signInAnonymously } from "firebase/auth";
+import {
+  getAuth,
+  signInAnonymously,
+  setPersistence,
+  browserLocalPersistence,
+} from "firebase/auth";
 
 // 🔑 Configuración de tu proyecto
 const firebaseConfig = {
@@ -11,19 +16,24 @@ const firebaseConfig = {
   storageBucket: "voterooms-5df69.firebasestorage.app",
   messagingSenderId: "705392078077",
   appId: "1:705392078077:web:419660aa3d5812200d6294",
-  measurementId: "G-0G6R9PE6DV"
+  measurementId: "G-0G6R9PE6DV",
 };
 
 // Inicializar Firebase
 const app = initializeApp(firebaseConfig);
 
-// Exportar Firestore
+// Exportar Firestore y Auth
 export const db = getFirestore(app);
-
-// Exportar Auth y login anónimo
 export const auth = getAuth(app);
 
-// Hacer login anónimo automáticamente
-signInAnonymously(auth).catch((err) => {
-  console.error("Error en autenticación anónima:", err);
-});
+// ✅ Persistencia local + login anónimo
+setPersistence(auth, browserLocalPersistence)
+  .then(() => {
+    // Si no hay usuario, iniciar sesión anónima
+    if (!auth.currentUser) {
+      return signInAnonymously(auth);
+    }
+  })
+  .catch((err) => {
+    console.error("Error configurando persistencia o autenticación anónima:", err);
+  });
