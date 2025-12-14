@@ -13,6 +13,7 @@ import {
   serverTimestamp,
   query,
   orderBy,
+  runTransaction,
 } from "firebase/firestore";
 import { Toaster, toast } from "react-hot-toast";
 import jsPDF from "jspdf";
@@ -384,84 +385,96 @@ export default function App() {
   // - Presencia: límite 1 para todos.
   // - Normal: límite 2 si hasDelegation, si no 1; puede enviar en dos tandas.
   // - Etiquetado si hay delegación: primer voto con su nombre, segundo "en representación de X".
-  const votar = async (qId, opcionesSeleccionadas, qData) => {
-    const user = auth.currentUser;
-    if (!user) return toast.error("🚫 No estás autenticado");
+  // ---------------------------
+// VOTAR (con transacción - evita pisado por concurrencia)
+// ---------------------------
+const votar = async (qId, opcionesSeleccionadas, qData) => {
+  const user = auth.currentUser;
+  if (!user) return toast.error("🚫 No estás autenticado");
 
-    if (sendingVoteForQ.current[qId]) return; // evitar dobles clics por latencia
-    sendingVoteForQ.current[qId] = true;
+  if (sendingVoteForQ.current[qId]) return; // evitar dobles clics por latencia
+  sendingVoteForQ.current[qId] = true;
 
-    try {
-      // **Bloqueo moderador votando**
-      if (user.uid === adminUid) {
-        toast.error("👀 El moderador no vota, solo modera.");
-        return;
-      }
-      if (qData.closed) {
-        toast.error("🔒 Pregunta cerrada");
-        return;
-      }
+  try {
+    // Moderador no vota
+    if (user.uid === adminUid) {
+      toast.error("👀 El moderador no vota, solo modera.");
+      return;
+    }
 
-      // info del participante
-      const myPartSnap = await getDoc(doc(db, "rooms", code, "participants", user.uid));
-      const me = myPartSnap.data() || {};
-      const limit = qData.isPresenceSurvey ? 1 : me.hasDelegation ? 2 : 1;
+    // Info del participante (delegación)
+    const myPartSnap = await getDoc(doc(db, "rooms", code, "participants", user.uid));
+    const me = myPartSnap.data() || {};
+    const limit = qData.isPresenceSurvey ? 1 : me.hasDelegation ? 2 : 1;
 
-      // cuántas veces ya votaste en esta pregunta
-      const yaVeces = (qData.voters || []).filter((v) => v.uid === user.uid).length;
+    const qRef = doc(db, "rooms", code, "questions", qId);
+
+    // Para el toast (voto 1/2 o 2/2) calculado con data fresca
+    let voteIdx = 1;
+
+    await runTransaction(db, async (tx) => {
+      const freshSnap = await tx.get(qRef);
+      if (!freshSnap.exists()) throw new Error("Pregunta no encontrada");
+
+      const fresh = freshSnap.data() || {};
+
+      if (fresh.closed) throw new Error("🔒 Pregunta cerrada");
+
+      // Veces que ya votó este usuario (con data fresca)
+      const yaVeces = (fresh.voters || []).filter((v) => v.uid === user.uid).length;
+      voteIdx = yaVeces + 1;
+
       if (yaVeces >= limit) {
-        toast.error(
-          qData.isPresenceSurvey
+        throw new Error(
+          fresh.isPresenceSurvey
             ? "Solo puedes responder una vez la encuesta de votantes activos."
             : "Ya alcanzaste tu límite de votos para esta pregunta."
         );
-        return;
       }
 
-      // maxChoices se aplica por envío (solo preguntas normales)
+      // maxChoices por envío (solo preguntas normales)
       if (
-        !qData.isPresenceSurvey &&
-        qData.maxChoices > 0 &&
-        (opcionesSeleccionadas || []).length > qData.maxChoices
+        !fresh.isPresenceSurvey &&
+        fresh.maxChoices > 0 &&
+        (opcionesSeleccionadas || []).length > fresh.maxChoices
       ) {
-        toast.error(`⚠️ Máximo ${qData.maxChoices} opciones por envío`);
-        return;
+        throw new Error(`⚠️ Máximo ${fresh.maxChoices} opciones por envío`);
       }
 
-      // Incremento de votos
-      const freshSnap = await getDoc(doc(db, "rooms", code, "questions", qId));
-      const fresh = freshSnap.data() || {};
+      // Incremento de votos (con data fresca)
       const newVotes = { ...(fresh.votes || {}) };
       (opcionesSeleccionadas || []).forEach((op) => {
         newVotes[op] = (newVotes[op] || 0) + 1;
       });
 
-      // **Nombre mostrado** (delegación)
+      // Nombre mostrado (delegación)
       let displayName = localStorage.getItem("userName") || "Anónimo";
       if (!fresh.isPresenceSurvey && me.hasDelegation) {
+        // Si es el 2do voto, se marca "en representación..."
         if (yaVeces === 1) {
           const rep = me.delegateName?.trim() || "su delegado";
           displayName = `${displayName} en representación de ${rep}`;
         }
-        // yaVeces === 0: se queda como su nombre normal
       }
 
-      await updateDoc(doc(db, "rooms", code, "questions", qId), {
+      tx.update(qRef, {
         votes: newVotes,
         voters: [
           ...(fresh.voters || []),
           { uid: user.uid, name: displayName, choices: opcionesSeleccionadas },
         ],
       });
+    });
 
-      const idx = yaVeces + 1;
-      const tail =
-        !fresh.isPresenceSurvey && me.hasDelegation && limit === 2 ? ` (voto ${idx}/2)` : "";
-      toast.success("🗳️ Voto registrado" + tail);
-    } finally {
-      sendingVoteForQ.current[qId] = false;
-    }
-  };
+    const tail =
+      !qData.isPresenceSurvey && me.hasDelegation && limit === 2 ? ` (voto ${voteIdx}/2)` : "";
+    toast.success("🗳️ Voto registrado" + tail);
+  } catch (err) {
+    toast.error(err?.message || "❌ Error registrando el voto");
+  } finally {
+    sendingVoteForQ.current[qId] = false;
+  }
+};
 
   // Cancelar un voto de un participante (moderador)
   const cancelarVoto = async (qId, voterIndex) => {
@@ -655,7 +668,7 @@ export default function App() {
                       disabled={q.closed || isAdmin} // moderador no puede votar
                       className="w-full rounded-lg bg-blue-600 px-3 py-2 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
                     >
-                      {op} ({q.votes[op] || 0})
+                      {q.closed ? `${op} (${q.votes[op] || 0})` : op}
                     </button>
                   ))}
                 </div>
@@ -747,7 +760,7 @@ export default function App() {
                                     }
                                   }}
                                 />
-                                {op} ({q.votes[op] || 0})
+                                {q.closed ? `${op} (${q.votes[op] || 0})` : op}
                               </label>
                             ))}
                             <button
@@ -767,7 +780,7 @@ export default function App() {
                                 disabled={q.closed || isAdmin}
                                 className="w-full rounded-lg bg-primary px-3 py-2 text-white text-sm sm:text-base font-medium hover:bg-primary-light disabled:opacity-50"
                               >
-                                {op} ({q.votes[op] || 0})
+                                {q.closed ? `${op} (${q.votes[op] || 0})` : op}
                               </button>
                             ))}
                           </div>
