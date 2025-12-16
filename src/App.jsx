@@ -388,6 +388,7 @@ const joinPresenter = async () => {
       maxChoices: normalizedChoices,
       isPresenceSurvey: false,
       closed: false,
+      liveResults: false,
       createdAt: Date.now(),
       npvp: roomData?.npvp || 0, // snapshot NPVP
     });
@@ -538,6 +539,7 @@ if (mode === "presenter_room") {
   const current = questions.find((q) => !q.isPresenceSurvey && !q.closed) || null;
   const totalVotes = current ? Object.values(current.votes || {}).reduce((a, b) => a + b, 0) : 0;
   const quorumDecisorio = current ? Math.floor((current.npvp || 0) / 2) + 1 : 0;
+    const showResults = !!current && !!current.liveResults;
 
   return (
     <div className="min-h-screen w-full bg-purple-900 text-white flex flex-col">
@@ -554,6 +556,17 @@ if (mode === "presenter_room") {
           <div className="rounded-2xl bg-white/10 border border-white/15 p-8">
             <div className="flex flex-col gap-3">
               <div className="text-sm uppercase tracking-widest opacity-80">Pregunta actual</div>
+
+                {current && (
+                  <div className="text-sm opacity-85">
+                    {current.closed
+                      ? (current.liveResults ? "Resultados publicados (pregunta cerrada)" : "Pregunta cerrada (resultados no publicados)")
+                      : current.liveResults
+                        ? "Resultados publicados en vivo"
+                        : "Resultados ocultos (se publican al cerrar)"}
+                  </div>
+                )}
+
 
               {current ? (
                 <>
@@ -583,7 +596,7 @@ if (mode === "presenter_room") {
                   <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
                     {(current.options || []).map((op) => (
                       <div
-                        key={op}
+                        key={showResults ? `${op} (${current.votes?.[op] || 0})` : op}
                         className="rounded-xl bg-white/10 border border-white/15 px-5 py-4 text-2xl font-semibold"
                       >
                         {op}
@@ -814,7 +827,7 @@ if (mode === "room") {
                     <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
                       <h3 className="text-base sm:text-lg font-semibold">
                         {q.question}{" "}
-                        {q.closed && (
+                        {(isAdmin ? (q.closed || q.liveResults) : !!q.liveResults) && (
                           <span className="ml-2 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
                             Cerrada
                           </span>
@@ -829,6 +842,19 @@ if (mode === "room") {
                           🔒 Cerrar
                         </button>
                       )}
+
+{isAdmin && (
+  <button
+    onClick={() =>
+      updateDoc(doc(db, "rooms", code, "questions", q.id), {
+        liveResults: !q.liveResults,
+      })
+    }
+    className="text-xs sm:text-sm text-secondary hover:underline"
+  >
+    {q.liveResults ? "🙈 Ocultar resultados en vivo" : "📢 Publicar resultados en vivo"}
+  </button>
+)}
                     </div>
 
                     <p className="mt-1 text-xs text-black/70">
@@ -838,7 +864,7 @@ if (mode === "room") {
 
 
 {/* Resultados visibles al cerrar (publicación) */}
-{q.closed && (
+{(isAdmin ? (q.closed || q.liveResults) : !!q.liveResults) && (
   <div className="mt-3 grid gap-2 sm:grid-cols-2 md:grid-cols-3">
     {(q.options || []).map((op) => (
       <div
@@ -881,7 +907,7 @@ if (mode === "room") {
                                     }
                                   }}
                                 />
-                                {q.closed ? `${op} (${q.votes[op] || 0})` : op}
+                                {((isAdmin && q.closed) || (!isAdmin && q.liveResults)) ? `${op} (${q.votes[op] || 0})` : op}
                               </label>
                             ))}
                             <button
@@ -901,7 +927,7 @@ if (mode === "room") {
                                 disabled={q.closed || isAdmin}
                                 className="w-full rounded-lg bg-primary px-3 py-2 text-white text-sm sm:text-base font-medium hover:bg-primary-light disabled:opacity-50"
                               >
-                                {q.closed ? `${op} (${q.votes[op] || 0})` : op}
+                                {((isAdmin && q.closed) || (!isAdmin && q.liveResults)) ? `${op} (${q.votes[op] || 0})` : op}
                               </button>
                             ))}
                           </div>
