@@ -20,8 +20,11 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
 export default function App() {
-  // modes: "home" | "moderator" | "voter" | "room"
+  // modes: "home" | "moderator" | "voter" | "presenter" | "room" | "presenter_room"
   const [mode, setMode] = useState("home");
+
+  // rol dentro de la sala
+  const [isPresenter, setIsPresenter] = useState(false);
 
   // sala
   const [code, setCode] = useState(null);
@@ -254,6 +257,21 @@ export default function App() {
     toast.success("🙌 Te uniste a la sala");
   };
 
+// Unirse como PRESENTADOR (no participa, no se registra en participants)
+const joinPresenter = async () => {
+  if (!joinCode.trim()) return toast.error("🔑 Escribe un código");
+
+  const roomId = joinCode.toUpperCase();
+  const ref = doc(db, "rooms", roomId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return toast.error("❌ Sala no encontrada");
+
+  setIsPresenter(true);
+  setCode(roomId);
+  setMode("presenter_room");
+  toast.success("🖥️ Vista de presentador activada");
+};
+
   useEffect(() => {
     if (!code) return;
     const unsubRoom = onSnapshot(doc(db, "rooms", code), (snap) => {
@@ -283,7 +301,7 @@ export default function App() {
 
         // auto-salida si te expulsan
         const user = auth.currentUser;
-        if (user && !ps.some((p) => p.uid === user.uid)) {
+        if (user && !isPresenter && !ps.some((p) => p.uid === user.uid)) {
           setMode("home");
           setCode(null);
           toast.error("❌ Has sido expulsado de la sala");
@@ -514,7 +532,95 @@ const votar = async (qId, opcionesSeleccionadas, qData) => {
   const isAdmin = useMemo(() => auth.currentUser?.uid === adminUid, [adminUid]);
 
   // ========= ROOM =========
-  if (mode === "room") {
+  
+// ========= PRESENTER ROOM =========
+if (mode === "presenter_room") {
+  const current = questions.find((q) => !q.isPresenceSurvey && !q.closed) || null;
+  const totalVotes = current ? Object.values(current.votes || {}).reduce((a, b) => a + b, 0) : 0;
+  const quorumDecisorio = current ? Math.floor((current.npvp || 0) / 2) + 1 : 0;
+
+  return (
+    <div className="min-h-screen w-full bg-purple-900 text-white flex flex-col">
+      <div className="px-6 py-4 flex items-center justify-between border-b border-white/15">
+        <div className="text-2xl font-bold tracking-wide">Mesa de votación</div>
+        <div className="text-right">
+          <div className="text-sm opacity-80">Código de sala</div>
+          <div className="text-3xl font-extrabold tracking-widest">{code}</div>
+        </div>
+      </div>
+
+      <main className="flex-1 px-6 py-8 flex flex-col justify-center">
+        <div className="max-w-5xl mx-auto w-full space-y-8">
+          <div className="rounded-2xl bg-white/10 border border-white/15 p-8">
+            <div className="flex flex-col gap-3">
+              <div className="text-sm uppercase tracking-widest opacity-80">Pregunta actual</div>
+
+              {current ? (
+                <>
+                  <div className="text-4xl font-extrabold leading-tight">{current.question}</div>
+
+                  <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="rounded-xl bg-black/20 border border-white/10 p-4">
+                      <div className="text-xs uppercase tracking-widest opacity-80">Estado</div>
+                      <div className="text-2xl font-bold">{current.closed ? "Cerrada" : "Abierta"}</div>
+                    </div>
+
+                    <div className="rounded-xl bg-black/20 border border-white/10 p-4">
+                      <div className="text-xs uppercase tracking-widest opacity-80">NPVP</div>
+                      <div className="text-2xl font-bold">{current.npvp || 0}</div>
+                    </div>
+
+                    <div className="rounded-xl bg-black/20 border border-white/10 p-4">
+                      <div className="text-xs uppercase tracking-widest opacity-80">Quórum decisorio</div>
+                      <div className="text-2xl font-bold">{quorumDecisorio}</div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 text-lg opacity-90">
+                    Total de votos registrados: <b>{totalVotes}</b>
+                  </div>
+
+                  <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {(current.options || []).map((op) => (
+                      <div
+                        key={op}
+                        className="rounded-xl bg-white/10 border border-white/15 px-5 py-4 text-2xl font-semibold"
+                      >
+                        {op}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="text-3xl font-bold opacity-90">
+                  No hay una pregunta abierta en este momento.
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between text-sm opacity-90">
+            <div>
+              Participantes conectados: <b>{participants.length}</b>
+            </div>
+            <button
+              onClick={() => {
+                setMode("home");
+                setCode(null);
+                setIsPresenter(false);
+              }}
+              className="rounded-lg bg-white/15 hover:bg-white/20 px-4 py-2 font-medium"
+            >
+              Salir
+            </button>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+if (mode === "room") {
     return (
       <div className="min-h-screen flex flex-col bg-background">
         {/* Header */}
@@ -730,6 +836,21 @@ const votar = async (qId, opcionesSeleccionadas, qData) => {
                       decisorio: <b>{quorumDecisorio}</b>
                     </p>
 
+
+{/* Resultados visibles al cerrar (publicación) */}
+{q.closed && (
+  <div className="mt-3 grid gap-2 sm:grid-cols-2 md:grid-cols-3">
+    {(q.options || []).map((op) => (
+      <div
+        key={op}
+        className="w-full rounded-lg bg-gray-100 px-3 py-2 text-sm sm:text-base font-medium text-black/80 border border-black/5"
+      >
+        {op} ({q.votes?.[op] || 0})
+      </div>
+    ))}
+  </div>
+)}
+
                     {!q.closed && (
                       <div className="mt-3">
                         {q.maxChoices > 1 ? (
@@ -893,7 +1014,20 @@ const votar = async (qId, opcionesSeleccionadas, qData) => {
                 Continuar como votante
               </button>
             </section>
-          </div>
+          
+
+<section className="rounded-2xl border border-black/5 bg-white p-6 shadow-sm">
+  <h3 className="text-base sm:text-lg font-semibold text-primary mb-3">Presentador</h3>
+  <p className="text-sm text-black/70 mb-4">
+    Vista en pantalla completa para proyectar el código de la sala y la pregunta actual.
+  </p>
+  <button
+    onClick={() => setMode("presenter")}
+    className="w-full sm:w-auto rounded-lg px-4 py-2 font-medium text-white bg-purple-700 hover:bg-purple-800"
+  >
+    Continuar como presentador
+  </button>
+</section></div>
         </main>
 
         <footer className="bg-primary-dark text-white mt-auto">
@@ -907,7 +1041,67 @@ const votar = async (qId, opcionesSeleccionadas, qData) => {
     );
   }
 
-  // ========= MODERATOR =========
+  
+// ========= PRESENTER =========
+if (mode === "presenter") {
+  return (
+    <div className="min-h-screen flex flex-col bg-background">
+      <header className="bg-purple-800 text-white">
+        <div className="mx-auto max-w-5xl px-3 sm:px-4 py-3 sm:py-4 flex items-center justify-between">
+          <h1 className="text-lg sm:text-xl font-bold">Vista de presentador</h1>
+          <button
+            onClick={() => {
+              setMode("home");
+              setIsPresenter(false);
+            }}
+            className="text-xs sm:text-sm underline decoration-white/60 hover:decoration-white"
+          >
+            ← Volver
+          </button>
+        </div>
+      </header>
+
+      <main className="flex-1 mx-auto max-w-5xl px-3 sm:px-4 py-6 sm:py-10">
+        <section className="rounded-2xl border border-black/5 bg-white p-6 shadow-sm max-w-xl mx-auto">
+          <h3 className="text-base sm:text-lg font-semibold text-primary mb-4">
+            Entrar como presentador
+          </h3>
+
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col sm:flex-row gap-3">
+              <input
+                value={joinCode}
+                onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+                placeholder="Código de la sala (ej: ABC12)"
+                className="flex-1 rounded-lg border border-black/10 px-3 py-2 uppercase tracking-wider outline-none focus:ring-2 focus:ring-purple-500/30"
+              />
+              <button
+                onClick={joinPresenter}
+                className="w-full sm:w-auto rounded-lg px-4 py-2 font-medium text-white bg-purple-700 hover:bg-purple-800"
+              >
+                Entrar
+              </button>
+            </div>
+
+            <p className="text-sm text-black/70">
+              Este rol no vota ni aparece como participante. Es solo para proyección.
+            </p>
+          </div>
+        </section>
+      </main>
+
+      <footer className="bg-purple-900 text-white mt-auto">
+        <div className="mx-auto max-w-5xl px-2 sm:px-4 py-2 sm:py-3 text-center text-xs sm:text-sm opacity-90">
+          © {new Date().getFullYear()} Mesas de Votación — Vista de presentador.
+        </div>
+      </footer>
+
+      <Toaster position="top-center" toastOptions={{ duration: 3000 }} />
+    </div>
+  );
+}
+
+// ========= MODERATOR =========
   if (mode === "moderator") {
     return (
       <div className="min-h-screen flex flex-col bg-background">
